@@ -104,8 +104,8 @@ jobs:
 
             # caddy
             if command -v caddy >/dev/null 2>&1; then
-              if ! sudo diff -q Caddyfile /etc/caddy/Caddyfile >/dev/null 2>&1; then
-                sudo cp Caddyfile /etc/caddy/Caddyfile
+              if ! sudo diff -q deploy/Caddyfile /etc/caddy/Caddyfile >/dev/null 2>&1; then
+                sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
                 sudo systemctl reload caddy || true
               fi
             else
