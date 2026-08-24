@@ -15,11 +15,11 @@ on:
   workflow_dispatch:
     inputs:
       vendor_id:
-        description: '可选 vendor_id（仅做 vendor_add 用，不影响部署）'
+        description: 'Optional vendor_id for ad-hoc vendor add'
         required: false
         type: string
       vendor_label:
-        description: 'vendor 的 label'
+        description: 'Label for the vendor'
         required: false
         type: string
 
