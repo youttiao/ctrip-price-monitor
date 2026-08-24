@@ -146,4 +146,4 @@ jobs:
           mkdir -p ~/.ssh
           chmod 600 ~/.ssh/id_ed25519 2>/dev/null || true
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
-            "cd /opt/ctrip-price-monitor && CTRIP_DB_PATH=$CTRIP_DB_PATH .venv/bin/python scripts/vendor_add.py 16540 vendor-16540 && CTRIP_DB_PATH=$CTRIP_DB_PATH .venv/bin/python -c 'import sqlite3; c=sqlite3.connect(\"$CTRIP_DB_PATH\"); print([dict(r) for r in c.execute(\"SELECT * FROM my_vendors WHERE vendor_id=16540\")])'"
+            "cd /opt/ctrip-price-monitor && CTRIP_DB_PATH=$CTRIP_DB_PATH .venv/bin/python scripts/vendor_add.py 16540 vendor-16540"
