@@ -37,7 +37,7 @@
         {% for v in vendors %}
         <tr class="{% if v.is_active %}is-mine{% endif %}">
           <td class="mono">{{ v.vendor_id }}</td>
-          <td>{{ v.name }}</td>
+          <td>{% if v.name %}{{ v.name }}{% else %}<span class="muted" style="font-style:italic">— 待采集 —</span>{% endif %}</td>
           <td class="muted">{{ v.brand_company_name or '-' }}</td>
           <td class="muted mono" style="font-size:var(--fs-xs)">{{ v.licence_no or '-' }}</td>
           <td class="muted mono" style="font-size:var(--fs-xs)">{{ v.last_seen_at[:16] if v.last_seen_at else '-' }}</td>

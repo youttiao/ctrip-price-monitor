@@ -1,13 +1,19 @@
-"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理。"""
+"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理 + ops。"""
 from __future__ import annotations
 import json as _json
 import secrets
+import subprocess
+import sys
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import auth
+
+ROOT = Path(__file__).resolve().parents[2]
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -26,14 +32,26 @@ def _require_admin(request: Request):
 def vendors(request: Request):
     user = _require_admin(request)
     conn = request.app.state.db
+    # 双源 UNION：vendors 表 ∪ my_vendors 表（避免 admin 手动加的 vendor 因从未被抓取而看不到）
     rows = conn.execute("""
-        SELECT v.vendor_id, v.name, v.brand_company_name, v.licence_no,
-               v.last_seen_at, v.sku_count,
-               m.label, m.is_active
-        FROM vendors v
-        LEFT JOIN my_vendors m ON m.vendor_id=v.vendor_id
-        ORDER BY v.last_seen_at DESC NULLS LAST
-        LIMIT 100
+        SELECT vendor_id, name, brand_company_name, licence_no,
+               last_seen_at, sku_count, label, is_active, source
+        FROM (
+            SELECT v.vendor_id, v.name, v.brand_company_name, v.licence_no,
+                   v.last_seen_at, v.sku_count,
+                   m.label, m.is_active, 'vendors' AS source
+            FROM vendors v
+            LEFT JOIN my_vendors m ON m.vendor_id=v.vendor_id
+            UNION ALL
+            SELECT m.vendor_id, NULL AS name, NULL AS brand_company_name, NULL AS licence_no,
+                   NULL AS last_seen_at, 0 AS sku_count,
+                   m.label, m.is_active, 'my_only' AS source
+            FROM my_vendors m
+            LEFT JOIN vendors v ON v.vendor_id=m.vendor_id
+            WHERE v.vendor_id IS NULL
+        )
+        ORDER BY is_active DESC, last_seen_at DESC NULLS LAST, vendor_id
+        LIMIT 200
     """).fetchall()
     return request.app.state.tmpl.TemplateResponse(
         request, "admin_vendors.html",
@@ -46,12 +64,19 @@ def vendor_add(request: Request, vendor_id: int = Form(...), label: str = Form("
     user = _require_admin(request)
     conn = request.app.state.db
     now = datetime.now(timezone.utc).isoformat()
+    # 1) upsert 到 my_vendors
     conn.execute("""
         INSERT INTO my_vendors (vendor_id, label, is_active, created_at, updated_at)
         VALUES (?, ?, 1, ?, ?)
         ON CONFLICT(vendor_id) DO UPDATE SET
             is_active=1, updated_at=?, label=COALESCE(NULLIF(?, ''), my_vendors.label)
     """, (vendor_id, label, now, now, now, label))
+    # 2) stub row 到 vendors 表（确保列表能看到；后续被真实抓到时 upsert 补全信息）
+    conn.execute("""
+        INSERT OR IGNORE INTO vendors (vendor_id, name, brand_company_name, licence_no,
+                                       first_seen_at, last_seen_at, sku_count)
+        VALUES (?, NULL, NULL, NULL, ?, NULL, 0)
+    """, (vendor_id, now, now))
     conn.commit()
     return RedirectResponse("/admin/vendors", status_code=303)
 
@@ -76,6 +101,59 @@ def vendor_delete(request: Request, vendor_id: int):
     conn.execute("DELETE FROM my_vendors WHERE vendor_id=?", (vendor_id,))
     conn.commit()
     return RedirectResponse("/admin/vendors", status_code=303)
+
+
+# ── 手动触发抓取与解析 ─────────────────────────────────────────────
+
+# 同进程内同时只允许 1 个解析任务跑；新触发会丢弃（不排队）
+_parser_lock = threading.Lock()
+_last_trigger: dict = {"ts": None, "ok": None, "detail": None}
+
+
+@router.post("/capture/trigger", response_class=JSONResponse)
+def capture_trigger(request: Request):
+    """手动触发 round_parser 同步跑一次。"""
+    user = _require_admin(request)
+    if _parser_lock.locked():
+        return JSONResponse({"ok": False, "busy": True,
+                             "detail": "已有解析任务在跑（systemd timer 或上一次手动），请稍后再试"},
+                            status_code=409)
+
+    def _run():
+        global _last_trigger
+        with _parser_lock:
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "scripts.round_parser", "--limit", "20"],
+                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+                )
+                _last_trigger = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ok": result.returncode == 0,
+                    "stdout": result.stdout[-1000:],
+                    "stderr": result.stderr[-500:] if result.stderr else "",
+                    "returncode": result.returncode,
+                }
+            except subprocess.TimeoutExpired:
+                _last_trigger = {"ts": datetime.now(timezone.utc).isoformat(),
+                                 "ok": False, "detail": "timeout (>60s)"}
+            except Exception as e:
+                _last_trigger = {"ts": datetime.now(timezone.utc).isoformat(),
+                                 "ok": False, "detail": str(e)}
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=70)
+    return JSONResponse({"ok": _last_trigger.get("ok"),
+                         "ts": _last_trigger.get("ts"),
+                         "detail": _last_trigger})
+
+
+@router.get("/capture/last", response_class=JSONResponse)
+def capture_last(request: Request):
+    """查看上一次手动触发的结果。"""
+    user = _require_admin(request)
+    return JSONResponse(_last_trigger)
 
 
 @router.post("/watchlist/toggle")

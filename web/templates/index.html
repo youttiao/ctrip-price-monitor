@@ -6,6 +6,39 @@
 
   <div class="eyebrow">第 {{ pois|length }} 个哨位 · 轮询中</div>
 
+  {% if user and user.role == 'admin' %}
+  <div class="ops-bar" style="display:flex; gap:var(--sp-3); align-items:center; padding:var(--sp-3) var(--sp-4); background:var(--card); border:1px solid var(--rule); border-radius:var(--r); margin-bottom:var(--sp-5); font-size:var(--fs-sm)">
+    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)">手动触发解析:</span>
+    <button class="btn primary sm" type="button" onclick="triggerCapture(this)" id="captureBtn">▶ 立即跑解析</button>
+    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)" id="captureStatus">尚未触发</span>
+  </div>
+  <script>
+  async function triggerCapture(btn){
+    btn.disabled = true;
+    btn.textContent = '解析中…';
+    const status = document.getElementById('captureStatus');
+    status.textContent = '调用 /admin/capture/trigger';
+    try {
+      const r = await fetch('/admin/capture/trigger', {method: 'POST', credentials: 'same-origin'});
+      const j = await r.json();
+      if (j.ok) {
+        status.textContent = '✓ 完成于 ' + (j.ts || '').slice(11,19);
+        setTimeout(()=>location.reload(), 800);
+      } else if (j.busy) {
+        status.textContent = '⏳ 解析任务进行中，等下次';
+      } else {
+        status.textContent = '✗ ' + (j.detail && j.detail.detail || JSON.stringify(j).slice(0,80));
+      }
+    } catch(e) {
+      status.textContent = '✗ ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '▶ 立即跑解析';
+    }
+  }
+  </script>
+  {% endif %}
+
   <div class="kpi-row">
     <div class="kpi">
       <div class="label">监控 POI</div>

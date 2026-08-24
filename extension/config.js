@@ -1,6 +1,6 @@
 // 默认配置（用户在 popup 里覆盖）
 export const CONFIG_DEFAULTS = {
-  server:    "http://127.0.0.1:8000",
+  server:    "https://xiecheng.19880913.xyz",
   apiSecret: "",
   poiList: [
     { viewid: 233,  name: "天坛公园",     url: "https://m.ctrip.com/restapi/soa2/14509/json/GetSightOverview?viewId=233" },
