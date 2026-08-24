@@ -1,8 +1,7 @@
 name: vendor-add
 
-# SSH 到 VPS → 通过 web API 用 admin login → POST /admin/vendors/add
-# 替代: 直接 sqlite3 写 my_vendors (和 stub row)
-# 但 admin auth 走 web session, 复杂. 直接 sqlite 更简单.
+# SSH 到 VPS → 用 admin 凭据登录 web → POST /admin/vendors/add
+# 也顺手写 my_vendors 的 label/stub（API 已做）
 
 on:
   workflow_dispatch:
@@ -35,24 +34,34 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
             set -euo pipefail
             cd /opt/ctrip-price-monitor
             ADMIN_PWD="${CTRIP_ADMIN_PASSWORD}"
-            echo "admin pwd len: \${#ADMIN_PWD}"
+            echo "admin pwd len: ${#ADMIN_PWD}"
 
-            # 拿 sid (admin login)
-            SID=$(curl -sc - -X POST http://127.0.0.1:8000/login \
-              -d "username=admin&password=\${ADMIN_PWD}" \
-              | awk '/ctrip_sid/ {print \$NF}')
-            if [[ -z "$SID" ]]; then
-              echo "LOGIN FAILED — CTRIP_ADMIN_PASSWORD may differ"
-              exit 1
-            fi
-            echo "login ok, sid=$SID"
+            # 用 python 单次完成 login + POST add
+            VID="$VID"
+            LABEL="$LABEL"
 
-            curl -sb - -X POST "http://127.0.0.1:8000/admin/vendors/add" \
-              -H "Cookie: ctrip_sid=$SID" \
-              -d "vendor_id=$VID&label=$LABEL" \
-              -o /dev/null -w "add status: %{http_code}\n"
+            .venv/bin/python - <<PYEOF
+import urllib.parse, http.cookiejar, urllib.request, sys
+jar = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+opener.addheaders = [('User-Agent', 'workflow-vendor-add/1.0')]
+
+# login
+data = urllib.parse.urlencode({"username": "admin", "password": "${ADMIN_PWD}"}).encode()
+r = opener.open("http://127.0.0.1:8000/login", data=data)
+print("login:", r.status)
+sid = next((c.value for c in jar if c.name == "ctrip_sid"), None)
+print("sid:", sid and sid[:8] + "…")
+if not sid:
+    sys.exit("no sid after login")
+
+# vendor add
+data = urllib.parse.urlencode({"vendor_id": "${VID}", "label": "${LABEL}"}).encode()
+r = opener.open("http://127.0.0.1:8000/admin/vendors/add", data=data)
+print("add:", r.status, r.url)
+PYEOF
           REMOTE
