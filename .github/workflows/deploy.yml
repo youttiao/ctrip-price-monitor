@@ -89,11 +89,16 @@ jobs:
             sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
             sudo systemctl daemon-reload
 
-            # 启动 / 重启
+            # 启动 / 重启 — 先彻底 kill 老 uvicorn（防 --workers 2 master 没死透）
+            sudo pkill -9 -f 'uvicorn web.server:app' 2>/dev/null || true
             sudo systemctl enable --now ctrip-web.service
             sudo systemctl restart ctrip-web.service
             sudo systemctl enable ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer
             sudo systemctl restart ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer || true
+            sleep 2
+            sudo pkill -9 -f 'uvicorn web.server:app' 2>/dev/null || true
+            sudo systemctl restart ctrip-web.service
+            sleep 3
 
             # 首次部署：DB 不存在则用 .env 里 API_SECRET 初始化（保留已有 DB）
             if [[ ! -f data/monitor.db ]] && [[ -n "${API_SECRET}" ]]; then
