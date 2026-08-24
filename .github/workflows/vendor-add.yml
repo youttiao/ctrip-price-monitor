@@ -1,18 +1,18 @@
-name: vendor-add
+name: "vendor-add"
 
 # SSH 到 VPS → 用 admin 凭据登录 web → POST /admin/vendors/add
 # 也顺手写 my_vendors 的 label/stub（API 已做）
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       vendor_id:
-        description: 'vendor_id (integer)'
+        description: "vendor_id (integer)"
         required: true
       label:
-        description: '可选 label'
+        description: "可选 label"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   add:
