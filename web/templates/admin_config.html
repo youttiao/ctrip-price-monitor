@@ -1,19 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Webhook 配置 · 携程哨兵{% endblock %}
+{% block title %}Webhook · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
+  <div class="eyebrow">管理 · Webhook</div>
   <div class="page-header">
     <div>
       <h1>Webhook 配置</h1>
-      <div class="sub muted">告警会通过 HMAC-SHA256 签名 POST 到此 URL</div>
+      <div class="sub">告警会通过 HMAC-SHA256 签名 POST 到此 URL</div>
     </div>
-    <div>
-      <a href="/admin/api-secret" class="btn ghost sm">API Secret →</a>
-    </div>
+    <a href="/admin/api-secret" class="btn ghost sm">API Secret →</a>
   </div>
 
-  <div class="card" style="max-width:560px">
+  <div class="card" style="max-width:600px">
     <form method="post" action="/admin/config/webhook">
       <div class="form-row">
         <label>URL</label>
@@ -28,9 +28,12 @@
       </div>
     </form>
 
-    <div class="muted mt-4" style="font-size:var(--fs-xs)">
-      签名 header：<code>X-Ctrip-Signature: sha256=&lt;hex&gt;</code><br>
-      签名内容：<code>HMAC-SHA256(secret, body)</code>
+    <hr style="border:none; border-top:1px dashed var(--rule); margin:var(--sp-5) 0">
+
+    <h3 class="card-title">签名说明</h3>
+    <div class="mono" style="font-size:var(--fs-sm); color:var(--ink-2); line-height:1.8">
+      <strong>头：</strong> <code>X-Ctrip-Signature: sha256=&lt;hex&gt;</code><br>
+      <strong>算法：</strong> HMAC-SHA256(secret, raw_body)
     </div>
   </div>
 

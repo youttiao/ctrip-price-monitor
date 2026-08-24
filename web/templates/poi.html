@@ -1,20 +1,21 @@
 {% extends "base.html" %}
 {% block title %}{{ poi.name }} · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
+  <div class="eyebrow"><a href="/">← 总览</a></div>
   <div class="page-header">
     <div>
       <h1>{{ poi.name }}</h1>
-      <div class="sub muted mono">viewid {{ poi.viewid }}</div>
+      <div class="sub">viewid {{ poi.viewid }} · 上一轮快照</div>
     </div>
-    <a href="/" class="muted">← 返回总览</a>
   </div>
 
   {% if not rows %}
   <div class="empty">
     <div class="icon">·</div>
-    <div>还没有解析后的快照 · 等待下一轮 round</div>
+    <div>本哨位尚未落盘 · 等下一轮 round</div>
   </div>
   {% else %}
 
@@ -26,49 +27,45 @@
       <div class="shelf-group">
         <div class="header">
           <span class="title">{{ row.shelf_type_name or '（未分组）' }}</span>
-          <span class="muted mono" style="font-size:var(--fs-xs)">shelf_type_id {{ row.shelf_type_id or '-' }}</span>
-          <div style="margin-left:auto">
-            <span class="wl-toggle {% if row.shelf_type_id in watched %}on{% endif %}"
-                  hx-post="/admin/watchlist/toggle"
-                  hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ row.shelf_type_id }}","active":"{% if row.shelf_type_id in watched %}0{% else %}1{% endif %}"}'
-                  hx-trigger="click"
-                  hx-swap="none">
-              {% if row.shelf_type_id in watched %}★ 关注中{% else %}☆ 加入关注{% endif %}
-            </span>
-          </div>
+          <span class="shelf-id">shelf_type_id {{ row.shelf_type_id or '-' }}</span>
+          <span class="wl-toggle {% if row.shelf_type_id in watched %}on{% endif %}"
+                hx-post="/admin/watchlist/toggle"
+                hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ row.shelf_type_id }}","active":"{% if row.shelf_type_id in watched %}0{% else %}1{% endif %}"}'
+                hx-trigger="click"
+                hx-swap="none">
+            {% if row.shelf_type_id in watched %}★ 关注中{% else %}☆ 加入关注{% endif %}
+          </span>
         </div>
         <div class="body">
     {% endif %}
 
-    <div style="display:flex;align-items:center;padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--color-border) {% if loop.last %}border-bottom:none{% endif %} {% if row.is_mine_vid %}background:rgba(76,154,255,.04);box-shadow:inset 3px 0 0 var(--color-accent){% endif %}">
-      <div style="min-width:48px">
+    <div class="sku-row {% if row.is_mine_vid %}mine{% endif %}">
+      <div>
         {% if row.rank == 1 %}
-          <span class="rank r1">1</span>
+          <span class="seal r1">1</span>
         {% elif row.rank == 2 %}
-          <span class="rank r2">2</span>
+          <span class="seal r2">2</span>
         {% elif row.rank == 3 %}
-          <span class="rank r3">3</span>
+          <span class="seal r3">3</span>
         {% else %}
-          <span class="rank">{{ row.rank or '-' }}</span>
+          <span class="seal">{{ row.rank or '-' }}</span>
         {% endif %}
       </div>
-      <div style="flex:1;min-width:0">
-        <div class="sku-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          {{ row.full_name }}
-        </div>
-        <div class="muted" style="font-size:var(--fs-xs)">
+      <div class="sku-info">
+        <div class="sku-name">{{ row.full_name }}</div>
+        <div class="sku-meta">
           {{ row.brand_company_name or '-' }}
-          {% if row.is_mine_vid %} · <span style="color:var(--color-accent)">我的</span>{% endif %}
+          {% if row.is_mine_vid %}<span class="mine-tag">我的</span>{% endif %}
         </div>
       </div>
-      <div class="right" style="min-width:140px">
-        <div class="mono" style="font-size:var(--fs-md)">¥{{ '%.0f'|format(row.display_price or 0) }}</div>
+      <div class="price">
+        ¥{{ '%.0f'|format(row.display_price or 0) }}
         {% if row.market_price and row.market_price > row.display_price %}
-          <div class="muted mono" style="font-size:var(--fs-xs);text-decoration:line-through">¥{{ '%.0f'|format(row.market_price) }}</div>
+          <span class="market">¥{{ '%.0f'|format(row.market_price) }}</span>
         {% endif %}
       </div>
-      <div class="muted mono right" style="min-width:80px;font-size:var(--fs-xs)">
-        {{ '{:,}'.format(row.sale_count or 0) }} 销
+      <div class="sales">
+        <span class="v">{{ '{:,}'.format(row.sale_count or 0) }}</span> 销
       </div>
     </div>
 

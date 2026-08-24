@@ -2,17 +2,34 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=1280">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}携程哨兵{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="/static/css/main.css">
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
   {% block head %}{% endblock %}
 </head>
 <body>
+
 {% if user %}
-<div class="topnav">
-  <div class="brand"><span class="dot"></span>携程哨兵</div>
-  <nav>
+{% set hb = heartbeat(request.app.state.db) %}
+
+<header class="masthead">
+  <div class="masthead-row">
+    <div class="brand">
+      <span class="chop">哨</span>
+      <span class="name">携程哨兵<span class="light"> · 私人哨位日志</span></span>
+    </div>
+    <div class="right">
+      <span class="user">{{ user.username }} · {{ user.role }}</span>
+      <form method="post" action="/logout"><button class="btn sm ghost" type="submit">退出</button></form>
+    </div>
+  </div>
+
+  <nav class="masthead-nav">
     {% set path = request.url.path %}
     <a href="/" class="{% if path == '/' %}active{% endif %}">总览</a>
     <a href="/myfootprint" class="{% if path.startswith('/myfootprint') %}active{% endif %}">我的足迹</a>
@@ -20,7 +37,19 @@
     {% if user.role == 'admin' %}
       <a href="/admin/vendors" class="{% if path.startswith('/admin') %}active{% endif %}">管理</a>
     {% endif %}
+
+    <div class="heartbeat" style="margin-left:auto">
+      {% if hb.last_minutes_ago is not none %}
+        <span class="pulse {{ hb.pulse }}"></span>
+        <span class="when">上次捕获 {{ hb.last_minutes_ago }} 分钟前</span>
+      {% else %}
+        <span class="pulse {{ hb.pulse }}"></span>
+        <span class="when">尚未捕获 · 等首轮</span>
+      {% endif %}
+      <span class="who">· 共 {{ hb.round_count }} 轮</span>
+    </div>
   </nav>
+
   {% if user.role == 'admin' and path.startswith('/admin') %}
   <div class="admin-subnav">
     <a href="/admin/vendors" class="{% if path == '/admin/vendors' %}active{% endif %}">Vendors</a>
@@ -29,13 +58,7 @@
     <a href="/admin/users" class="{% if path == '/admin/users' %}active{% endif %}">用户</a>
   </div>
   {% endif %}
-  <div class="right">
-    <span class="user">{{ user.username }} · {{ user.role }}</span>
-    <form method="post" action="/logout" style="margin:0">
-      <button class="btn sm ghost" type="submit">退出</button>
-    </form>
-  </div>
-</div>
+</header>
 {% endif %}
 
 {% block body %}{% endblock %}

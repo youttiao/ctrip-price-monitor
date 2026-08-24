@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}Vendor 管理 · 携程哨兵{% endblock %}
+{% block title %}Vendors · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
+  <div class="eyebrow">管理 · Vendors</div>
   <div class="page-header">
-    <div>
-      <h1>Vendor 管理</h1>
-      <div class="sub muted">所有出现过的 vendor + 我已加入 my_vendors 的</div>
-    </div>
+    <h1>Vendor</h1>
+    <span class="sub">所有出现过的 vendor + 我已加入 my_vendors 的</span>
   </div>
 
-  <div class="card mb-3">
-    <div class="card-title">添加 vendorId 到我的列表</div>
+  <div class="card mb-4">
+    <h3 class="card-title">加入我的列表</h3>
     <form method="post" action="/admin/vendors/add" class="flex gap-3">
-      <input class="form-row" style="flex:1" type="number" name="vendor_id" placeholder="vendorId（数字）" required>
-      <input class="form-row" style="flex:2" type="text" name="label" placeholder="备注（可选）">
+      <input type="number" name="vendor_id" placeholder="vendorId（数字）" required style="flex:1; padding:var(--sp-2) var(--sp-3); background:var(--paper); border:1px solid var(--rule); border-radius:2px; font-family:var(--font-mono); font-size:var(--fs-sm)">
+      <input type="text" name="label" placeholder="备注（可选）" style="flex:2; padding:var(--sp-2) var(--sp-3); background:var(--paper); border:1px solid var(--rule); border-radius:2px; font-family:var(--font-body); font-size:var(--fs-sm)">
       <button class="btn primary" type="submit">加入</button>
     </form>
   </div>
@@ -28,8 +28,8 @@
           <th>品牌公司</th>
           <th>许可证</th>
           <th>最近出现</th>
-          <th>SKU 数</th>
-          <th>我的备注</th>
+          <th class="num">SKU</th>
+          <th>备注</th>
           <th class="num">操作</th>
         </tr>
       </thead>
@@ -56,7 +56,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="empty">还没有 vendor 数据 · 等待下一轮 round</td></tr>
+        <tr><td colspan="8"><div class="empty" style="border:none">还没有 vendor 数据 · 等下一轮 round</div></td></tr>
         {% endfor %}
       </tbody>
     </table>

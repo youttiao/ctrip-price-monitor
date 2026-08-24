@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}用户管理 · 携程哨兵{% endblock %}
+{% block title %}用户 · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
+  <div class="eyebrow">管理 · 用户</div>
   <div class="page-header">
-    <div>
-      <h1>用户管理</h1>
-      <div class="sub muted">目前只展示，不支持 UI 新增</div>
-    </div>
+    <h1>用户</h1>
+    <span class="sub">只展示，不支持 UI 新增</span>
   </div>
 
   <div class="table">
@@ -28,14 +28,10 @@
           <td class="mono">{{ u.id }}</td>
           <td>{{ u.username }}</td>
           <td>
-            <span class="pill {% if u.role == 'admin' %}ok{% else %}muted{% endif %}">
-              <span class="dot"></span>{{ u.role }}
-            </span>
+            <span class="pill {% if u.role == 'admin' %}info{% else %}muted{% endif %}">{{ u.role }}</span>
           </td>
           <td>
-            <span class="pill {% if u.is_active %}ok{% else %}muted{% endif %}">
-              <span class="dot"></span>{% if u.is_active %}active{% else %}disabled{% endif %}
-            </span>
+            <span class="pill {% if u.is_active %}info{% else %}muted{% endif %}">{% if u.is_active %}active{% else %}disabled{% endif %}</span>
           </td>
           <td class="muted mono" style="font-size:var(--fs-xs)">{{ u.created_at[:16] if u.created_at else '-' }}</td>
           <td class="muted mono" style="font-size:var(--fs-xs)">{{ u.last_login_at[:16] if u.last_login_at else '-' }}</td>
@@ -46,4 +42,19 @@
   </div>
 
 </div>
+
+<style>
+.pill {
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 2px;
+  display: inline-flex;
+  width: fit-content;
+}
+.pill.info { background: var(--navy); color: var(--paper); }
+.pill.muted { background: var(--card-2); color: var(--ink-3); }
+</style>
 {% endblock %}

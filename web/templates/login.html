@@ -1,12 +1,18 @@
 {% extends "base.html" %}
 {% block title %}登录 · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="login-wrap">
   <div class="login-card">
-    <h1><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--color-good);box-shadow:0 0 8px var(--color-good);"></span>携程哨兵</h1>
+    <div class="brand">
+      <span class="chop">哨</span>
+      <div class="name">携程哨兵<span class="light">私人哨位</span></div>
+    </div>
+
     {% if error %}
       <div class="err">{{ error }}</div>
     {% endif %}
+
     <form method="post" action="/login">
       <div class="form-row">
         <label>账号</label>
@@ -16,10 +22,11 @@
         <label>密码</label>
         <input type="password" name="password" autocomplete="current-password" required>
       </div>
-      <div class="form-row" style="margin-top:var(--sp-4)">
-        <button class="btn primary" type="submit" style="flex:1">登录</button>
+      <div class="form-row" style="margin-top:var(--sp-5)">
+        <button class="btn primary" type="submit" style="flex:1; justify-content:center">登录</button>
       </div>
     </form>
   </div>
 </div>
+
 {% endblock %}

@@ -1,39 +1,44 @@
 {% extends "base.html" %}
 {% block title %}我的足迹 · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
+  <div class="eyebrow">我的 vendorId · {{ my_vids|length }} 个</div>
   <div class="page-header">
-    <div>
-      <h1>我的足迹</h1>
-      <div class="sub muted">我（{{ my_vids|length }} 个 vendorId）出现在哪些 POI × shelfType</div>
-    </div>
+    <h1>我的足迹</h1>
+    <span class="sub">我出现在哪些哨位 × shelfType</span>
   </div>
 
   {% if by_poi %}
     {% for viewid, group in by_poi.items() %}
-    <div class="card mb-3">
+    <div class="card mb-4">
       <div class="flex between center mb-3">
         <div>
-          <a href="/poi/{{ viewid }}" style="font-size:var(--fs-md);font-weight:600">{{ group.name }}</a>
-          <span class="muted mono" style="font-size:var(--fs-xs);margin-left:var(--sp-2)">viewid {{ viewid }}</span>
+          <a href="/poi/{{ viewid }}" style="font-family:var(--font-display); font-size:var(--fs-lg); font-weight:600; color:var(--ink); border:none">
+            {{ group.name }}
+          </a>
+          <span class="muted mono" style="font-size:var(--fs-xs); margin-left:var(--sp-2)">viewid {{ viewid }}</span>
         </div>
-        <span class="muted" style="font-size:var(--fs-xs)">{{ group.shelves|length }} 个 shelfType</span>
+        <span class="muted" style="font-family:var(--font-display); font-style:italic; font-size:var(--fs-sm)">{{ group.shelves|length }} 个 shelfType</span>
       </div>
-      <table class="table" style="border:none">
+      <table class="table" style="border:none; background:transparent">
         <thead>
           <tr>
             <th>shelfType</th>
-            <th class="num">SKU 数</th>
+            <th class="num">SKU</th>
             <th class="num">最低价</th>
             <th class="num">最高价</th>
-            <th>watchlist</th>
+            <th>关注</th>
           </tr>
         </thead>
         <tbody>
           {% for sh in group.shelves %}
           <tr>
-            <td>{{ sh.shelf_type_name or '-' }} <span class="muted mono" style="font-size:var(--fs-xs)">{{ sh.shelf_type_id }}</span></td>
+            <td>
+              {{ sh.shelf_type_name or '-' }}
+              <span class="muted mono" style="font-size:var(--fs-xs)">{{ sh.shelf_type_id }}</span>
+            </td>
             <td class="num">{{ sh.sku_count }}</td>
             <td class="num">¥{{ '%.0f'|format(sh.min_price or 0) }}</td>
             <td class="num">¥{{ '%.0f'|format(sh.max_price or 0) }}</td>
@@ -55,7 +60,7 @@
   {% else %}
     <div class="empty">
       <div class="icon">·</div>
-      <div>暂无我的 SKU · 等待采集 + 确认 <code>my_vendors</code> 已配置</div>
+      <div>暂无足迹 · 等待首轮 round + 配置 my_vendors</div>
     </div>
   {% endif %}
 

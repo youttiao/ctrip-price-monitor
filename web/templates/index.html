@@ -1,61 +1,57 @@
 {% extends "base.html" %}
 {% block title %}总览 · 携程哨兵{% endblock %}
 {% block body %}
+
 <div class="page">
 
-  <!-- 顶部 KPI -->
-  <div class="flex gap-3 mb-3">
-    <div class="card" style="flex:1">
-      <div class="kpi">
-        <div class="num">{{ pois|length }}</div>
-        <div class="label">监控 POI</div>
-      </div>
+  <div class="eyebrow">第 {{ pois|length }} 个哨位 · 轮询中</div>
+
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="label">监控 POI</div>
+      <div class="num">{{ pois|length }}</div>
     </div>
-    <div class="card" style="flex:1">
-      <div class="kpi">
-        <div class="num">{{ my_vids|length }}</div>
-        <div class="label">我的 vendorId</div>
-      </div>
+    <div class="kpi">
+      <div class="label">我的 vendorId</div>
+      <div class="num">{{ my_vids|length }}</div>
     </div>
-    <div class="card" style="flex:1">
-      <div class="kpi">
-        <div class="num {% if wl_count > 0 %}good{% endif %}">{{ wl_count }}</div>
-        <div class="label">已加入 watchlist 的 shelfType</div>
-      </div>
+    <div class="kpi">
+      <div class="label">已关注 shelfType</div>
+      <div class="num {% if wl_count > 0 %}good{% endif %}">{{ wl_count }}</div>
     </div>
-    <div class="card" style="flex:1">
-      <div class="kpi">
-        <div class="num {% if alerts %}warn{% else %}good{% endif %}">{{ alerts|length }}</div>
-        <div class="label">最近告警（10）</div>
-      </div>
+    <div class="kpi">
+      <div class="label">最近告警</div>
+      <div class="num {% if alerts %}warn{% else %}good{% endif %}">{{ alerts|length }}</div>
     </div>
   </div>
 
   <div class="page-header">
-    <h1>监控的 POI</h1>
-    <div class="sub muted">每 30 分钟一轮</div>
+    <h1>哨位</h1>
+    <span class="sub">每个 POI 上一轮的快照</span>
   </div>
 
   {% if pois %}
-  <div class="poi-grid">
+  <div class="poi-list">
     {% for p in pois %}
     <a class="poi-card" href="/poi/{{ p.viewid }}">
-      <div class="name">{{ p.name }}</div>
-      <div class="meta">
-        <span class="mono">{{ p.viewid }}</span>
-        <span>
-          {% if p.last_received %}
-            <span class="pill ok"><span class="dot"></span>已采集</span>
-          {% else %}
-            <span class="pill muted"><span class="dot"></span>待采集</span>
-          {% endif %}
-        </span>
+      <div class="name">
+        <span>{{ p.name }}</span>
+        <span class="id">#{{ p.viewid }}</span>
       </div>
-      <div class="footer">
-        <span class="muted" style="font-size:var(--fs-xs)">SKU {{ p.last_sku_count or 0 }} · 我 {{ p.last_mine_count or 0 }}</span>
-        {% if p.last_received %}
-          <span class="muted mono" style="font-size:var(--fs-xs)">{{ p.last_received[:16] }}</span>
-        {% endif %}
+      {% if p.last_received %}
+        <span class="mono" style="font-size:var(--fs-xs); color:var(--ink-3)">采集于 {{ p.last_received[11:16] }}</span>
+      {% else %}
+        <span class="mono" style="font-size:var(--fs-xs); color:var(--ink-3)">待首轮</span>
+      {% endif %}
+      <div class="statline">
+        <div class="stat">
+          <span class="k">SKU</span>
+          <span class="v">{{ p.last_sku_count or 0 }}</span>
+        </div>
+        <div class="stat">
+          <span class="k">我的</span>
+          <span class="v mine">{{ p.last_mine_count or 0 }}</span>
+        </div>
       </div>
     </a>
     {% endfor %}
@@ -63,19 +59,20 @@
   {% else %}
   <div class="empty">
     <div class="icon">·</div>
-    <div>暂无 POI · 先去 <code>/admin</code> 添加</div>
+    <div>暂无哨位 · 先去 <a href="/admin/vendors">Vendors</a> 添加 POI</div>
   </div>
   {% endif %}
 
   {% if alerts %}
-  <div class="page-header mt-4">
+  <div class="page-header mt-6">
     <h1>最近告警</h1>
-    <a href="/alerts" class="muted" style="font-size:var(--fs-sm)">查看全部 →</a>
+    <a href="/alerts" class="sub">查看全部 →</a>
   </div>
   <div class="alert-list">
     {% for a in alerts[:8] %}
     <div class="alert-row {{ a.severity }}">
-      <div class="ts">{{ a.ts[11:16] if a.ts else '' }}</div>
+      <div class="ts">{{ a.ts[:16].replace('T',' ') if a.ts else '' }}</div>
+      <div><span class="pill {{ a.severity }}">{{ a.severity }}</span></div>
       <div class="body">
         <div class="title">{{ a.type }} · {{ a.sku_name or a.shelf_type_name or '' }}</div>
         <div class="ctx">{{ a.poi_name }} · {{ a.shelf_type_name or '' }}</div>

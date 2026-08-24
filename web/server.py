@@ -28,6 +28,39 @@ def create_app(db_path: str = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     templates = Jinja2Templates(directory=tmpl_dir)
     templates.env.globals["now"] = lambda: datetime.now(timezone.utc)
+
+    def heartbeat(db_conn):
+        """报头心跳：上次捕获 + 距今分钟数 + pulse 状态。"""
+        try:
+            row = db_conn.execute(
+                "SELECT MAX(received_at) AS last FROM rounds WHERE status='parsed'"
+            ).fetchone()
+            last = row["last"] if row else None
+        except Exception:
+            last = None
+        try:
+            cnt = db_conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
+        except Exception:
+            cnt = 0
+        last_min = None
+        pulse = "ok"
+        if last:
+            try:
+                if isinstance(last, str):
+                    last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                else:
+                    last_dt = last
+                last_min = int((datetime.now(timezone.utc) - last_dt).total_seconds() / 60)
+                if last_min > 180:
+                    pulse = "dead"
+                elif last_min > 60:
+                    pulse = "late"
+            except Exception:
+                last_min = None
+        return {"last_at": last, "last_minutes_ago": last_min,
+                "pulse": pulse, "round_count": cnt}
+
+    templates.env.globals["heartbeat"] = heartbeat
     app.state.tmpl = templates
 
     @app.middleware("http")
