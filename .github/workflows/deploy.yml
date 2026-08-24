@@ -66,8 +66,10 @@ jobs:
             set -euo pipefail
             cd /opt/ctrip-price-monitor
 
-            # 写 .env（从 GH secrets 注入；API_SECRET 仅用于首次 init_db）
-            printf 'API_SECRET=%s\nWEBHOOK_URL=%s\nWEBHOOK_SECRET=%s\nCTRIP_DB_PATH=%s\nCTRIP_RAW_DIR=%s\n' \
+            # 写 .env（从 GH secrets 注入；API_SECRET 必须与 DB config.api_secret 一致）
+            # init_db.py 把 secret 以 JSON-quoted 字符串写入 DB（"\"secret\""），所以 .env
+            # 也必须带引号，否则 server-scraper / extension 用错 secret POST 会 401。
+            printf 'API_SECRET="%s"\nWEBHOOK_URL="%s"\nWEBHOOK_SECRET="%s"\nCTRIP_DB_PATH=%s\nCTRIP_RAW_DIR=%s\n' \
               "${API_SECRET}" "${WEBHOOK_URL}" "${WEBHOOK_SECRET}" "${CTRIP_DB_PATH}" "${CTRIP_RAW_DIR}" \
               > .env
             chmod 600 .env

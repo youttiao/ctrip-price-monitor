@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Server-side scraper：用最新 cookies 调 search + addInfo。
+"""Server-side scraper：用最新 cookies 调 search + addInfo + priceCalendar。
 
 30 分钟一轮。每轮：
     1. 读 cookies 表最新一条
     2. 对每个 enabled POI：
-       - search（distributorSearchObj）→ 拿 resources
-       - 对每个 resource 调 resourceAddInfo 拿 ticketGroupId
+       - search（distributorSearchObj）→ 拿 resources + poiId
+       - 对每个 resource 调 resourceAddInfo 拿 vendor
+       - 对每个 resource 调 getProductPriceCalendar 拿每日/票种价格（如果能拿到 poiId）
        - POST 到本地 ingest endpoint（带 X-Ingest-Secret）
 
 注意事项：
-    - 只调 search + addInfo，不调 getProductShelf（后者要 w-payload-source header）
+    - 只调 search + addInfo + priceCalendar，不调 getProductShelf（后者要 w-payload-source header）
     - 如果没有 cookies，跳过本轮
+    - priceCalendar 用 URL 路径里的 poiId（不是 viewid），从 search 响应抽，pois 字典兜底
 """
 from __future__ import annotations
 import argparse, json, os, sys, time
@@ -24,6 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ctrip_core import selectors as S  # noqa: E402
+
+# 日历调用之间的 sleep，避免瞬时高并发触发风控
+_CALENDAR_THROTTLE_SEC = 0.3
 
 
 def load_latest_cookies(db_path: str) -> dict | None:
@@ -58,10 +63,10 @@ def load_enabled_pois(db_path: str) -> list[dict]:
     import sqlite3
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
-        "SELECT viewid, name, district_id FROM pois WHERE enabled=1 ORDER BY viewid"
+        "SELECT viewid, name, district FROM pois WHERE enabled=1 ORDER BY viewid"
     ).fetchall()
     conn.close()
-    return [{"viewid": r[0], "name": r[1], "district_id": r[2]} for r in rows]
+    return [{"viewid": r[0], "name": r[1], "district": r[2]} for r in rows]
 
 
 def fetch_search(client: httpx.Client, cookies: dict, poi: dict, use_date: str | None = None) -> dict:
@@ -79,10 +84,24 @@ def fetch_add_info(client: httpx.Client, cookies: dict, resource_id: int, poi_vi
     return r.json()
 
 
+def fetch_price_calendar(client: httpx.Client, cookies: dict, rid: int,
+                         poi_id_str: str, viewid: int) -> dict:
+    """调一次 getProductPriceCalendar。服务器端可调,无需 w-payload-source。
+
+    poi_id_str 必须是 URL 路径里的 poiId (字符串),不是 viewid。
+    """
+    body = S.price_calendar_payload(rid, poi_id_str, cookies)
+    r = client.post(S.PRICE_CAL_URL, json=body,
+                    headers=S.build_headers(cookies, "calendar"))
+    r.raise_for_status()
+    return r.json()
+
+
 def collect_round(poi: dict, cookies: dict) -> dict:
-    """组装一个 round（mock round：没有 getProductShelf，只有 search + addInfo）。
+    """组装一个 round：search + 每 rid 的 addInfo + 每 rid 的 priceCalendar。
 
     Returns: dict that matches the extension ingest schema (poi + requests).
+    所有响应都以 `body` 字段返回（与 parse.py:_extract_body 的识别格式对齐）。
     """
     captured = datetime.now(timezone.utc).isoformat()
     requests: list[dict] = []
@@ -95,21 +114,22 @@ def collect_round(poi: dict, cookies: dict) -> dict:
                 "url": S.SEARCH_URL,
                 "method": "POST",
                 "postData": {"text": json.dumps(S.search_payload(poi["viewid"]))},
-                "_response": search_resp,
+                "body": search_resp,
             })
         except Exception as e:
             return {"capturedAt": captured, "poi": poi, "error": f"search failed: {e}", "requests": []}
 
-        # 2) addInfo for each resource
-        resources = S.extract_resource_ids(search_resp)
-        for rid in resources[:S.MAX_ADDINFO_PER_ROUND]:
+        # 2) addInfo + priceCalendar for each resource
+        resources = S.extract_search_resources(search_resp)
+        for rid, poi_id_str in resources[:S.MAX_ADDINFO_PER_ROUND]:
+            # addInfo
             try:
                 info = fetch_add_info(client, cookies, rid, poi["viewid"])
                 requests.append({
                     "url": S.ADDINFO_URL,
                     "method": "POST",
                     "postData": {"text": json.dumps(S.addinfo_payload(rid, poi["viewid"]))},
-                    "_response": info,
+                    "body": info,
                 })
             except Exception as e:
                 # 不让单条 addInfo 失败搞砸整轮
@@ -117,8 +137,31 @@ def collect_round(poi: dict, cookies: dict) -> dict:
                     "url": S.ADDINFO_URL,
                     "method": "POST",
                     "postData": {"text": json.dumps(S.addinfo_payload(rid, poi["viewid"]))},
-                    "_error": str(e),
+                    "body": {"_error": str(e)},
                 })
+
+            # priceCalendar (新)
+            effective_poi_id = poi_id_str or S.POI_VIEWID_TO_POI_ID.get(poi["viewid"])
+            if not effective_poi_id:
+                print(f"  [calendar] skip rid={rid}: no poiId (search 响应无 poiId,且不在 POI_VIEWID_TO_POI_ID 兜底表里)",
+                      file=sys.stderr)
+                continue
+            try:
+                cal = fetch_price_calendar(client, cookies, rid, effective_poi_id, poi["viewid"])
+                requests.append({
+                    "url": S.PRICE_CAL_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.price_calendar_payload(rid, effective_poi_id, cookies))},
+                    "body": cal,
+                })
+            except Exception as e:
+                requests.append({
+                    "url": S.PRICE_CAL_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.price_calendar_payload(rid, effective_poi_id, cookies))},
+                    "body": {"_error": str(e)},
+                })
+            time.sleep(_CALENDAR_THROTTLE_SEC)
 
     return {
         "capturedAt": captured,
