@@ -62,7 +62,7 @@ jobs:
           CTRIP_RAW_DIR: /opt/ctrip-price-monitor/data/raw_rounds
           CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
           VID: "16540"
-          VID_LABEL: "北京旭冉假期旅游有限公司"
+          VID_LABEL: "vendor-16540"
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
             set -euo pipefail
