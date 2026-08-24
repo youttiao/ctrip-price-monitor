@@ -1,6 +1,11 @@
-"""POST /api/ingest/round + /api/cookies/sync。"""
+"""POST /api/ingest/round + /api/cookies/sync。
+
+单一 secret：所有客户端调用这两个 endpoint 必须带 `X-API-Secret` 头，
+值等于 config 表里 `api_secret` 键的值（首次 init_db 时随机生成，
+admin 可在 `/admin/api-secret` 页面查看 + rotate）。
+"""
 from __future__ import annotations
-import hmac, json, os, secrets, uuid
+import json, os, secrets, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,8 +18,20 @@ RAW_DIR = Path(os.getenv("CTRIP_RAW_DIR", "data/raw_rounds"))
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _verify(provided: str | None, env_key: str) -> bool:
-    exp = os.getenv(env_key, "")
+def _api_secret(conn) -> str:
+    """从 config 表读 api_secret（DB 是 source of truth）。"""
+    row = conn.execute("SELECT value FROM config WHERE key='api_secret'").fetchone()
+    if not row:
+        return ""
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return row["value"]
+
+
+def _verify(conn, provided: str | None) -> bool:
+    import hmac
+    exp = _api_secret(conn)
     return bool(exp) and bool(provided) and hmac.compare_digest(
         provided.encode(), exp.encode())
 
@@ -22,11 +39,12 @@ def _verify(provided: str | None, env_key: str) -> bool:
 @router.post("/ingest/round")
 async def ingest_round(
     request: Request,
-    x_ingest_secret: str | None = Header(default=None, alias="X-Ingest-Secret"),
+    x_api_secret: str | None = Header(default=None, alias="X-API-Secret"),
     x_extension_ver: str | None = Header(default=None, alias="X-Extension-Ver"),
     x_source: str = Header(default="extension", alias="X-Source"),
 ):
-    if not _verify(x_ingest_secret, "INGEST_SECRET"):
+    conn = request.app.state.db
+    if not _verify(conn, x_api_secret):
         return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
 
     body = await request.json()
@@ -41,7 +59,6 @@ async def ingest_round(
     path = RAW_DIR / fname
     path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    conn = request.app.state.db
     cur = conn.execute("""
         INSERT INTO rounds (round_id, captured_at, received_at, poi_viewid, poi_name,
                             source, requests_count, status, raw_path)
@@ -56,9 +73,10 @@ async def ingest_round(
 @router.post("/cookies/sync")
 async def sync_cookies(
     request: Request,
-    x_cookie_secret: str | None = Header(default=None, alias="X-Cookie-Secret"),
+    x_api_secret: str | None = Header(default=None, alias="X-API-Secret"),
 ):
-    if not _verify(x_cookie_secret, "COOKIE_SYNC_SECRET"):
+    conn = request.app.state.db
+    if not _verify(conn, x_api_secret):
         return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
 
     body = await request.json()
@@ -66,7 +84,6 @@ async def sync_cookies(
     if not cookies.get("GUID"):
         return JSONResponse({"ok": False, "error": "missing GUID"}, status_code=400)
 
-    conn = request.app.state.db
     blob = json.dumps(cookies, ensure_ascii=False)
     conn.execute("""
         INSERT INTO cookies (blob_json, uploaded_at, source, uploaded_by)

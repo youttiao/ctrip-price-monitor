@@ -2,17 +2,15 @@
 const $ = (id) => document.getElementById(id);
 
 async function load() {
-  const stored = await chrome.storage.local.get(["server", "ingestSecret", "cookieSecret"]);
-  $("server").value       = stored.server || "";
-  $("ingestSecret").value = stored.ingestSecret || "";
-  $("cookieSecret").value = stored.cookieSecret || "";
+  const stored = await chrome.storage.local.get(["server", "apiSecret"]);
+  $("server").value    = stored.server    || "";
+  $("apiSecret").value = stored.apiSecret || "";
 }
 
 async function save() {
   const v = {
-    server: $("server").value.trim(),
-    ingestSecret: $("ingestSecret").value.trim(),
-    cookieSecret: $("cookieSecret").value.trim(),
+    server:    $("server").value.trim(),
+    apiSecret: $("apiSecret").value.trim(),
   };
   await chrome.storage.local.set(v);
   flash("ok", "已保存");

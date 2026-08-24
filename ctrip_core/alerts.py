@@ -40,10 +40,12 @@ def detect_rank_alerts(conn, round_pk: int, parsed: dict) -> list[dict]:
 
     # 3. 本轮我的 rank（从 rank_history 表读，因为写入顺序：先 SKU → 再 rank_history）
     my_now_rows = conn.execute("""
-        SELECT shelf_type_id, rank, display_price, lowest_price, gap,
-               resource_id, vendor_id, shelf_type_name, full_name
-        FROM rank_history
-        WHERE round_id=? AND is_mine=1
+        SELECT rh.shelf_type_id, rh.rank, rh.display_price, rh.lowest_price, rh.gap,
+               rh.resource_id, rh.vendor_id,
+               s.shelf_type_name, s.full_name
+        FROM rank_history rh
+        JOIN sku_snapshot s ON s.round_id=rh.round_id AND s.resource_id=rh.resource_id
+        WHERE rh.round_id=? AND rh.is_mine=1
     """, (round_pk,)).fetchall()
     my_now = {r["shelf_type_id"]: r for r in my_now_rows}
 
@@ -57,10 +59,12 @@ def detect_rank_alerts(conn, round_pk: int, parsed: dict) -> list[dict]:
     my_prev = {}
     if prev_round_pk:
         prev_rows = conn.execute("""
-            SELECT shelf_type_id, rank, display_price, lowest_price, gap,
-                   resource_id, vendor_id, shelf_type_name, full_name
-            FROM rank_history
-            WHERE round_id=? AND is_mine=1
+            SELECT rh.shelf_type_id, rh.rank, rh.display_price, rh.lowest_price, rh.gap,
+                   rh.resource_id, rh.vendor_id,
+                   s.shelf_type_name, s.full_name
+            FROM rank_history rh
+            JOIN sku_snapshot s ON s.round_id=rh.round_id AND s.resource_id=rh.resource_id
+            WHERE rh.round_id=? AND rh.is_mine=1
         """, (prev_round_pk,)).fetchall()
         my_prev = {r["shelf_type_id"]: r for r in prev_rows}
 
@@ -68,8 +72,8 @@ def detect_rank_alerts(conn, round_pk: int, parsed: dict) -> list[dict]:
     alerts = []
     seen_shelves = set(my_now) | set(my_prev)
     for shelf_id in seen_shelves:
-        # 仅对 watchlist 中的 shelfType 发告警
-        if watched_shelves and shelf_id not in watched_shelves:
+        # 仅对 watchlist 中的 shelfType 发告警；watchlist 完全为空时静默
+        if not watched_shelves or shelf_id not in watched_shelves:
             continue
 
         now = my_now.get(shelf_id)

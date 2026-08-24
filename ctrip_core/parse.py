@@ -221,16 +221,41 @@ def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
 
 # ── helpers ──
 
+def _extract_body(r: dict) -> Optional[dict]:
+    """从 request entry 取 JSON body。
+
+    支持两种 shape：
+    1) {"body": <已解析 JSON>}（脚本直接构造）
+    2) {"response": {"bodyText": "<JSON string>"}}（Chrome 扩展抓的）
+    """
+    if "body" in r and isinstance(r["body"], (dict, list)):
+        return r["body"]
+    resp = r.get("response") or {}
+    text = resp.get("bodyText")
+    if isinstance(text, str):
+        try:
+            v = json.loads(text)
+            return v if isinstance(v, (dict, list)) else None
+        except Exception:
+            return None
+    return None
+
+
 def _find_body(rr: dict, url_substr: str) -> Optional[dict]:
     for r in rr.get("requests", []):
         if url_substr in r.get("url", ""):
-            return r.get("body")
+            return _extract_body(r)
     return None
 
 
 def _find_bodies(rr: dict, url_substr: str) -> list[dict]:
-    return [r["body"] for r in rr.get("requests", [])
-            if url_substr in r.get("url", "")]
+    out = []
+    for r in rr.get("requests", []):
+        if url_substr in r.get("url", ""):
+            b = _extract_body(r)
+            if b is not None:
+                out.append(b)
+    return out
 
 
 # ── 辅助：从 raw_round 抽取 cookies（用于服务器后台 scraper）──

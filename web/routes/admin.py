@@ -1,5 +1,7 @@
-"""Admin 路由：vendor list + watchlist toggle + config。"""
+"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理。"""
 from __future__ import annotations
+import json as _json
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
@@ -144,3 +146,50 @@ def admin_users(request: Request):
         request, "admin_users.html",
         {"user": user, "users": users}
     )
+
+
+# ── API secret 管理 ─────────────────────────────────────
+
+def _read_api_secret(conn) -> tuple[str, str | None]:
+    """返回 (secret, updated_at)。"""
+    row = conn.execute(
+        "SELECT value, updated_at FROM config WHERE key='api_secret'"
+    ).fetchone()
+    if not row:
+        return ("", None)
+    try:
+        return (_json.loads(row["value"]), row["updated_at"])
+    except Exception:
+        return (row["value"], row["updated_at"])
+
+
+@router.get("/api-secret", response_class=HTMLResponse)
+def admin_api_secret(request: Request):
+    user = _require_admin(request)
+    conn = request.app.state.db
+    secret, updated_at = _read_api_secret(conn)
+    # 取最近 N 条 cookie/ingest 用法记录（last_used_at 不在 schema 里，靠 alerts/rounds 间接看）
+    last_round = conn.execute(
+        "SELECT MAX(received_at) AS last FROM rounds"
+    ).fetchone()
+    return request.app.state.tmpl.TemplateResponse(
+        request, "admin_api_secret.html",
+        {"user": user, "api_secret": secret,
+         "updated_at": updated_at,
+         "last_round_at": last_round["last"] if last_round else None}
+    )
+
+
+@router.post("/api-secret/rotate")
+def admin_api_secret_rotate(request: Request):
+    """生成新的 api_secret 并立即生效。"""
+    user = _require_admin(request)
+    conn = request.app.state.db
+    new_secret = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("""
+        INSERT INTO config (key, value, updated_at) VALUES ('api_secret', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+    """, (_json.dumps(new_secret), now))
+    conn.commit()
+    return RedirectResponse("/admin/api-secret?rotated=1", status_code=303)

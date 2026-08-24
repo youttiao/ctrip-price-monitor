@@ -14,12 +14,11 @@ const ALARM_CAPTURE = "ctrip-capture-nudge";
 let cfg = null;
 
 async function loadCfg() {
-  const stored = await chrome.storage.local.get(["server", "ingestSecret", "cookieSecret", "poiList"]);
+  const stored = await chrome.storage.local.get(["server", "apiSecret", "poiList"]);
   cfg = {
-    server:       stored.server       || CONFIG_DEFAULTS.server,
-    ingestSecret: stored.ingestSecret || CONFIG_DEFAULTS.ingestSecret,
-    cookieSecret: stored.cookieSecret || CONFIG_DEFAULTS.cookieSecret,
-    poiList:      stored.poiList      || CONFIG_DEFAULTS.poiList,
+    server:    stored.server    || CONFIG_DEFAULTS.server,
+    apiSecret: stored.apiSecret || CONFIG_DEFAULTS.apiSecret,
+    poiList:   stored.poiList   || CONFIG_DEFAULTS.poiList,
   };
   return cfg;
 }
@@ -51,6 +50,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 async function syncCookies() {
   const c = await loadCfg();
+  if (!c.apiSecret) { console.warn("[ctrip] apiSecret not set"); return; }
   const cookies = await chrome.cookies.getAll({ domain: ".ctrip.com" });
   if (!cookies.length) return;
   const blob = {};
@@ -59,7 +59,7 @@ async function syncCookies() {
   try {
     await fetch(`${c.server}/api/cookies/sync`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Cookie-Secret": c.cookieSecret },
+      headers: { "Content-Type": "application/json", "X-API-Secret": c.apiSecret },
       body: JSON.stringify({ cookies: blob }),
     });
   } catch (e) {
@@ -86,7 +86,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-Ingest-Secret": c.ingestSecret,
+            "X-API-Secret": c.apiSecret,
             "X-Extension-Ver": chrome.runtime.getManifest().version,
             "X-Source": "extension",
           },

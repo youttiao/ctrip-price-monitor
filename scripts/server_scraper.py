@@ -38,6 +38,22 @@ def load_latest_cookies(db_path: str) -> dict | None:
     return json.loads(row[0])
 
 
+def load_api_secret(db_path: str) -> str:
+    """从 config 表读 api_secret（admin 在 /admin/api-secret rotate 后立刻生效）。"""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT value FROM config WHERE key='api_secret'"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return ""
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return row[0]
+
+
 def load_enabled_pois(db_path: str) -> list[dict]:
     import sqlite3
     conn = sqlite3.connect(db_path)
@@ -115,7 +131,7 @@ def post_round(server: str, secret: str, payload: dict) -> tuple[int, dict]:
     r = httpx.post(
         f"{server.rstrip('/')}/api/ingest/round",
         json=payload,
-        headers={"X-Ingest-Secret": secret, "X-Source": "server"},
+        headers={"X-API-Secret": secret, "X-Source": "server"},
         timeout=15,
     )
     try:
@@ -128,11 +144,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--db", default=os.getenv("CTRIP_DB_PATH", "data/monitor.db"))
     p.add_argument("--server", default=os.getenv("CTRIP_SERVER", "http://127.0.0.1:8000"))
-    p.add_argument("--secret", default=os.getenv("INGEST_SECRET", ""))
     args = p.parse_args()
 
-    if not args.secret:
-        print("FATAL: --secret or $INGEST_SECRET required", file=sys.stderr)
+    # api_secret 始终从 DB 读（与 /admin/api-secret 同步）
+    secret = load_api_secret(args.db)
+    if not secret:
+        print("FATAL: api_secret not set in config table; run init_db", file=sys.stderr)
         sys.exit(2)
 
     cookies = load_latest_cookies(args.db)

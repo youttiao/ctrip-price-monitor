@@ -5,8 +5,7 @@ name: deploy
 #   VPS_SSH_KEY       private key (无 passphrase)
 #   VPS_USER          默认 ctrip
 #   VPS_HOST          默认 racknerd19 IP / hostname
-#   INGEST_SECRET     服务端 + 扩展共用的 ingest 头
-#   COOKIE_SYNC_SECRET cookie 同步头
+#   API_SECRET        init_db 时生成，写入 config 表（admin 可在 /admin/api-secret 页面 rotate）
 #   WEBHOOK_URL       告警回调 (可选)
 #   WEBHOOK_SECRET    回调签名 (可选)
 
@@ -54,8 +53,7 @@ jobs:
         env:
           VPS_USER: ${{ secrets.VPS_USER || 'ctrip' }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
-          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
-          COOKIE_SYNC_SECRET: ${{ secrets.COOKIE_SYNC_SECRET }}
+          API_SECRET: ${{ secrets.API_SECRET }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           CTRIP_DB_PATH: /opt/ctrip-price-monitor/data/monitor.db
@@ -65,10 +63,9 @@ jobs:
             set -euo pipefail
             cd /opt/ctrip-price-monitor
 
-            # 写 .env（从 GH secrets 注入）
+            # 写 .env（从 GH secrets 注入；API_SECRET 仅用于首次 init_db）
             cat > .env <<EOF
-            INGEST_SECRET=${INGEST_SECRET}
-            COOKIE_SYNC_SECRET=${COOKIE_SYNC_SECRET}
+            API_SECRET=${API_SECRET}
             WEBHOOK_URL=${WEBHOOK_URL}
             WEBHOOK_SECRET=${WEBHOOK_SECRET}
             CTRIP_DB_PATH=${CTRIP_DB_PATH}
@@ -100,11 +97,29 @@ jobs:
             sudo systemctl enable ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer
             sudo systemctl restart ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer || true
 
-            # caddy
-            if [[ -f /etc/caddy/Caddyfile ]] && ! sudo diff -q Caddyfile /etc/caddy/Caddyfile >/dev/null; then
-              sudo cp Caddyfile /etc/caddy/Caddyfile
-              sudo systemctl reload caddy || true
+            # 首次部署：DB 不存在则用 .env 里 API_SECRET 初始化（保留已有 DB）
+            if [[ ! -f data/monitor.db ]] && [[ -n "${API_SECRET}" ]]; then
+              .venv/bin/python scripts/init_db.py --db data/monitor.db \
+                --api-secret "${API_SECRET}" --admin-password "${CTRIP_ADMIN_PASSWORD:-changeme}"
+              echo "✓ DB initialized"
             fi
+
+            # caddy
+            if command -v caddy >/dev/null 2>&1; then
+              if ! sudo diff -q Caddyfile /etc/caddy/Caddyfile >/dev/null 2>&1; then
+                sudo cp Caddyfile /etc/caddy/Caddyfile
+                sudo systemctl reload caddy || true
+              fi
+            else
+              echo "WARN: caddy not installed; skipping Caddyfile sync"
+            fi
+
+            # 端口 / DNS 自检
+            echo "=== listening ports ==="
+            (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ':(80|443|8000)\b' || echo "no listener on 80/443/8000"
+            echo "=== public IP ==="
+            curl -sf --max-time 5 https://api.ipify.org || echo "(ipify unreachable)"
+            echo
 
             # 健康检查
             sleep 3

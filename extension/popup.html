@@ -14,6 +14,7 @@
     .status { font-size: 11px; padding: 6px; border-radius: 4px; margin-top: 8px; }
     .status.ok { background: #e8f5e8; color: #2c7a2c; }
     .status.err { background: #fde4e4; color: #b22; }
+    .hint { font-size: 10px; color: #888; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -21,15 +22,12 @@
 
 <div class="row">
   <label>Server URL</label>
-  <input id="server" placeholder="http://127.0.0.1:8000 或 https://xiecheng.19880913.xyz">
+  <input id="server" placeholder="https://xiecheng.19880913.xyz 或 http://127.0.0.1:8000">
 </div>
 <div class="row">
-  <label>Ingest Secret</label>
-  <input id="ingestSecret" placeholder="X-Ingest-Secret 头">
-</div>
-<div class="row">
-  <label>Cookie Sync Secret</label>
-  <input id="cookieSecret" placeholder="X-Cookie-Secret 头">
+  <label>API Secret</label>
+  <input id="apiSecret" type="password" placeholder="X-API-Secret 头（粘贴就行）">
+  <div class="hint">在 dashboard 的 管理 → API Secret 页面查看</div>
 </div>
 <div class="row">
   <button class="primary" id="save">保存配置</button>

@@ -63,10 +63,10 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 建库
-python scripts/init_db.py --admin-password test1234 --ingest-secret test --cookie-secret test2
+python scripts/init_db.py --admin-password test1234 --api-secret test-dev-secret
 
-# 跑 web
-INGEST_SECRET=test COOKIE_SYNC_SECRET=test2 CTRIP_DB_PATH=data/monitor.db \
+# 跑 web（API_SECRET 仅首次 init 用；运行时从 config 表读，可通过 /admin/api-secret rotate）
+API_SECRET=test-dev-secret CTRIP_DB_PATH=data/monitor.db \
     uvicorn web.server:app --reload --port 8000
 
 # 跑 parser（手动）

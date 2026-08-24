@@ -29,22 +29,23 @@ def get_config(conn, key: str, default=None):
 
 def update_vendor_stats(conn, vendor_id: int, vendor_name: str | None, brand: str | None, licence: str | None, captured_at: str):
     conn.execute("""
-        INSERT INTO vendors (vendor_id, name, brand_company_name, licence_no, last_seen_at, sku_count)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO vendors (vendor_id, name, brand_company_name, licence_no,
+                             first_seen_at, last_seen_at, sku_count)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(vendor_id) DO UPDATE SET
             name=COALESCE(excluded.name, vendors.name),
             brand_company_name=COALESCE(excluded.brand_company_name, vendors.brand_company_name),
             licence_no=COALESCE(excluded.licence_no, vendors.licence_no),
             last_seen_at=excluded.last_seen_at,
             sku_count=vendors.sku_count + 1
-    """, (vendor_id, vendor_name, brand, licence, captured_at))
+    """, (vendor_id, vendor_name, brand, licence, captured_at, captured_at))
 
 
 def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
     raw = json.loads(Path(raw_path).read_text(encoding="utf-8"))
     captured_at = raw.get("capturedAt") or datetime.now(timezone.utc).isoformat()
 
-    parsed = parse_round(raw, poi_viewid)
+    parsed = parse_round(raw)
     if not parsed["skus"]:
         conn.execute(
             "UPDATE rounds SET status='empty', parsed_at=? WHERE id=?",
@@ -56,41 +57,52 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
     # 1) vendor stats
     for sku in parsed["skus"]:
         update_vendor_stats(
-            conn, sku["vendor_id"], sku.get("vendor_name"),
-            sku.get("brand_company_name"), sku.get("licence_no"), captured_at,
+            conn, sku["primary_vendor_id"], sku.get("primary_vendor_name"),
+            sku.get("primary_vendor_brand"), sku.get("primary_vendor_licence"), captured_at,
         )
 
     # 2) sku_snapshot 批量插入
     rows = [(
         round_pk, sku["resource_id"], poi_viewid,
-        sku["vendor_id"], sku["full_name"], sku.get("market_price"),
-        sku["display_price"], sku.get("sale_count"),
+        sku["primary_vendor_id"], sku["full_name"],
         sku.get("shelf_type_id"), sku.get("shelf_type_name"),
-        sku.get("ticket_group_id"), sku.get("shelf_group_id"),
-        sku.get("package_type"), sku.get("refund_rule"),
-        captured_at,
+        sku.get("spotid"),
+        sku.get("primary_vendor_name"), sku.get("primary_vendor_brand"),
+        sku.get("primary_vendor_licence"), sku.get("primary_vendor_licence_pic"),
+        sku["display_price"], sku.get("market_price"),
+        sku.get("first_booking_date"), sku.get("sale_count"),
+        json.dumps(sku.get("raw_resource") or {}, ensure_ascii=False),
     ) for sku in parsed["skus"]]
 
     conn.executemany("""
         INSERT INTO sku_snapshot (
-            round_id, resource_id, poi_viewid, primary_vendor_id,
-            full_name, market_price, display_price, sale_count,
-            shelf_type_id, shelf_type_name,
-            ticket_group_id, shelf_group_id,
-            package_type, refund_rule,
-            captured_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            round_id, resource_id, poi_viewid,
+            primary_vendor_id, full_name,
+            shelf_type_id, shelf_type_name, spotid,
+            primary_vendor_name, primary_vendor_brand,
+            primary_vendor_licence, primary_vendor_licence_pic,
+            display_price, market_price,
+            first_booking_date, sale_count,
+            raw_resource
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
 
     # 3) rank_history
     rh_rows = compute_rank_history(conn, round_pk, poi_viewid)
     if rh_rows:
+        rh_tuples = [(
+            r["round_id"], r["poi_viewid"], r["shelf_type_id"],
+            r["vendor_id"], r["resource_id"], r["rank"],
+            r["display_price"], r["lowest_resource_id"], r["lowest_price"],
+            r["gap"], r["is_mine"], captured_at,
+        ) for r in rh_rows]
         conn.executemany("""
             INSERT INTO rank_history (
                 round_id, poi_viewid, shelf_type_id, vendor_id, resource_id,
-                rank, display_price, lowest_price, gap, is_mine, captured_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """, rh_rows)
+                rank, display_price, lowest_resource_id, lowest_price,
+                gap, is_mine, captured_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, rh_tuples)
 
     # 4) alerts
     alerts = detect_rank_alerts(conn, round_pk, parsed)
@@ -100,12 +112,14 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         for a in alerts:
             conn.execute("""
                 INSERT OR IGNORE INTO alerts (
-                        captured_at, ts, type, severity, poi_viewid, poi_name,
+                        captured_at, ts, round_id, resource_id,
+                        type, severity, poi_viewid, poi_name,
                         shelf_type_id, shelf_type_name, sku_name, vendor_id,
                         payload, dedup_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                captured_at, now, a["type"], a["severity"],
+                captured_at, now, round_pk, a.get("resource_id"),
+                a["type"], a["severity"],
                 a["poi_viewid"], a["poi_name"],
                 a["shelf_type_id"], a["shelf_type_name"],
                 a["sku_name"], a["vendor_id"],
@@ -174,7 +188,7 @@ def main():
         except Exception as e:
             print(f"round {r['id']}: ERROR {e}", file=sys.stderr)
             conn.execute(
-                "UPDATE rounds SET status='error', error=? WHERE id=?",
+                "UPDATE rounds SET status='error', error_msg=? WHERE id=?",
                 (str(e)[:500], r["id"])
             )
             conn.commit()

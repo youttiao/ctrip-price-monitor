@@ -16,11 +16,13 @@ CREATE TABLE IF NOT EXISTS rounds (
     round_id        TEXT UNIQUE NOT NULL,
     captured_at     TEXT NOT NULL,
     received_at     TEXT NOT NULL,
+    parsed_at       TEXT,
     poi_viewid      INTEGER NOT NULL,
     poi_name        TEXT,
     source          TEXT NOT NULL,
     requests_count  INTEGER DEFAULT 0,
-    skus_total      INTEGER DEFAULT 0,
+    sku_count       INTEGER DEFAULT 0,
+    alert_count     INTEGER DEFAULT 0,
     skus_mine       INTEGER DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'pending',
     error_msg       TEXT,
@@ -133,6 +135,7 @@ CREATE TABLE IF NOT EXISTS rank_history (
     lowest_price    REAL,
     gap             REAL,
     is_mine         INTEGER NOT NULL DEFAULT 0,
+    captured_at     TEXT,
     FOREIGN KEY (round_id) REFERENCES rounds(id) ON DELETE CASCADE,
     UNIQUE(round_id, shelf_type_id, vendor_id)
 );
@@ -192,6 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS alerts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at     TEXT,
     ts              TEXT NOT NULL,
     round_id        INTEGER,
     type            TEXT NOT NULL,
@@ -227,10 +231,8 @@ def main():
     parser.add_argument("--db", default="data/monitor.db")
     parser.add_argument("--admin-password",
                         help="默认 admin 密码（否则用 env CTRIP_ADMIN_PASSWORD）")
-    parser.add_argument("--ingest-secret",
-                        help="默认 ingest secret（否则自动生成）")
-    parser.add_argument("--cookie-secret",
-                        help="默认 cookie sync secret（否则自动生成）")
+    parser.add_argument("--api-secret",
+                        help="默认 API secret（否则自动生成）")
     parser.add_argument("--reset", action="store_true",
                         help="删除旧 DB 后重建")
     args = parser.parse_args()
@@ -247,16 +249,14 @@ def main():
     now = datetime.now(timezone.utc).isoformat()
 
     # 默认 config
-    ingest = args.ingest_secret or os.getenv("INGEST_SECRET") or secrets.token_urlsafe(32)
-    cookie = args.cookie_secret or os.getenv("COOKIE_SYNC_SECRET") or secrets.token_urlsafe(32)
+    api_secret = args.api_secret or os.getenv("API_SECRET") or secrets.token_urlsafe(32)
     admin_pwd = args.admin_password or os.getenv("CTRIP_ADMIN_PASSWORD") or secrets.token_urlsafe(12)
 
     import bcrypt
     pw_hash = bcrypt.hashpw(admin_pwd.encode(), bcrypt.gensalt()).decode()
 
     defaults = [
-        ("ingest_secret", f'"{ingest}"'),
-        ("cookie_sync_secret", f'"{cookie}"'),
+        ("api_secret", f'"{api_secret}"'),
         ("webhook_url", "null"),
         ("webhook_secret", "null"),
         ("alert_threshold_rank_drop", "1"),
@@ -294,8 +294,7 @@ def main():
     conn.close()
 
     print(f"✓ DB initialized: {db_path}")
-    print(f"  ingest_secret = {ingest}")
-    print(f"  cookie_sync_secret = {cookie}")
+    print(f"  api_secret = {api_secret}")
     print(f"  admin password = {admin_pwd}")
     print("  (record these in /etc/ctrip-monitor/secrets.env)")
 
