@@ -66,13 +66,9 @@ jobs:
             cd /opt/ctrip-price-monitor
 
             # 写 .env（从 GH secrets 注入；API_SECRET 仅用于首次 init_db）
-            cat > .env <<EOF
-            API_SECRET=${API_SECRET}
-            WEBHOOK_URL=${WEBHOOK_URL}
-            WEBHOOK_SECRET=${WEBHOOK_SECRET}
-            CTRIP_DB_PATH=${CTRIP_DB_PATH}
-            CTRIP_RAW_DIR=${CTRIP_RAW_DIR}
-            EOF
+            printf 'API_SECRET=%s\nWEBHOOK_URL=%s\nWEBHOOK_SECRET=%s\nCTRIP_DB_PATH=%s\nCTRIP_RAW_DIR=%s\n' \
+              "${API_SECRET}" "${WEBHOOK_URL}" "${WEBHOOK_SECRET}" "${CTRIP_DB_PATH}" "${CTRIP_RAW_DIR}" \
+              > .env
             chmod 600 .env
 
             # venv（如果还没有）
