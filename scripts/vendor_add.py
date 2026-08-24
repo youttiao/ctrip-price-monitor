@@ -1,26 +1,46 @@
 #!/usr/bin/env python3
-"""在 VPS 上跑：admin login → POST /admin/vendors/add。
+"""直接 SQLite 写入 my_vendors + vendors stub（绕过 admin auth）。
 
 Usage: vendor_add.py <vendor_id> [<label>]
-env: ADMIN_PWD (required)
 """
-import os, sys, urllib.parse, http.cookiejar, urllib.request
+import os, sqlite3, sys
+from datetime import datetime, timezone
 
 VID = sys.argv[1]
 LABEL = sys.argv[2] if len(sys.argv) > 2 else ""
-ADMIN_PWD = os.environ["ADMIN_PWD"]
 
-jar = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-opener.addheaders = [("User-Agent", "vendor_add/1.0")]
+db_path = os.environ.get("CTRIP_DB_PATH", "data/monitor.db")
+conn = sqlite3.connect(db_path, isolation_level=None)
+now = datetime.now(timezone.utc).isoformat()
 
-data = urllib.parse.urlencode({"username": "admin", "password": ADMIN_PWD}).encode()
-r = opener.open("http://127.0.0.1:8000/login", data=data)
-print("login:", r.status)
-sid = next((c.value for c in jar if c.name == "ctrip_sid"), None)
-if not sid:
-    sys.exit("no sid after login")
+# 1) upsert into my_vendors
+cur = conn.execute(
+    "SELECT is_active, label FROM my_vendors WHERE vendor_id=?",
+    (VID,),
+)
+row = cur.fetchone()
+if row is None:
+    conn.execute(
+        "INSERT INTO my_vendors (vendor_id, label, is_active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+        (VID, LABEL, now, now),
+    )
+    print(f"my_vendors: inserted vid={VID} label='{LABEL}'")
+else:
+    conn.execute(
+        "UPDATE my_vendors SET is_active=1, updated_at=?, label=COALESCE(NULLIF(?, ''), label) WHERE vendor_id=?",
+        (now, LABEL, VID),
+    )
+    print(f"my_vendors: reactivated vid={VID}")
 
-data = urllib.parse.urlencode({"vendor_id": VID, "label": LABEL}).encode()
-r = opener.open("http://127.0.0.1:8000/admin/vendors/add", data=data)
-print("add:", r.status, r.url)
+# 2) stub into vendors
+cur = conn.execute("SELECT 1 FROM vendors WHERE vendor_id=?", (VID,))
+if cur.fetchone() is None:
+    conn.execute(
+        "INSERT OR IGNORE INTO vendors (vendor_id, name, brand_company_name, licence_no, first_seen_at, last_seen_at, sku_count) VALUES (?, NULL, NULL, NULL, ?, NULL, 0)",
+        (VID, now),
+    )
+    print(f"vendors: stub inserted vid={VID}")
+else:
+    print(f"vendors: existing vid={VID}, untouched")
+
+print(f"OK: vid={VID} is now active in my_vendors + visible in /admin/vendors")
