@@ -137,8 +137,8 @@ jobs:
                 CHANGED=1
               fi
 
-              # 3) 有变更才 reload
-              if [[ "${CHANGED:-0}" == "1" ]]; then
+              # 3) 有变更才 reload（\$ 转义避免被 GitHub Actions runner 端 heredoc 提前展开）
+              if [[ "\${CHANGED:-0}" == "1" ]]; then
                 sudo systemctl reload caddy || true
               else
                 echo "caddy: 无变更，跳过 reload"
