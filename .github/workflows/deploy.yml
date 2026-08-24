@@ -61,7 +61,7 @@ jobs:
           CTRIP_DB_PATH: /opt/ctrip-price-monitor/data/monitor.db
           CTRIP_RAW_DIR: /opt/ctrip-price-monitor/data/raw_rounds
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
             set -euo pipefail
             cd /opt/ctrip-price-monitor
 
