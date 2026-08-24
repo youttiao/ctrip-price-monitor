@@ -1,0 +1,58 @@
+name: vendor-add
+
+# SSH 到 VPS → 通过 web API 用 admin login → POST /admin/vendors/add
+# 替代: 直接 sqlite3 写 my_vendors (和 stub row)
+# 但 admin auth 走 web session, 复杂. 直接 sqlite 更简单.
+
+on:
+  workflow_dispatch:
+    inputs:
+      vendor_id:
+        description: 'vendor_id (integer)'
+        required: true
+      label:
+        description: '可选 label'
+        required: false
+        default: ''
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: SSH insert
+        env:
+          VPS_USER: ${{ secrets.VPS_USER || 'ctrip' }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VID: ${{ inputs.vendor_id }}
+          LABEL: ${{ inputs.label }}
+        CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
+            set -euo pipefail
+            cd /opt/ctrip-price-monitor
+            ADMIN_PWD="${CTRIP_ADMIN_PASSWORD}"
+            echo "admin pwd len: \${#ADMIN_PWD}"
+
+            # 拿 sid (admin login)
+            SID=$(curl -sc - -X POST http://127.0.0.1:8000/login \
+              -d "username=admin&password=\${ADMIN_PWD}" \
+              | awk '/ctrip_sid/ {print \$NF}')
+            if [[ -z "$SID" ]]; then
+              echo "LOGIN FAILED — CTRIP_ADMIN_PASSWORD may differ"
+              exit 1
+            fi
+            echo "login ok, sid=$SID"
+
+            curl -sb - -X POST "http://127.0.0.1:8000/admin/vendors/add" \
+              -H "Cookie: ctrip_sid=$SID" \
+              -d "vendor_id=$VID&label=$LABEL" \
+              -o /dev/null -w "add status: %{http_code}\n"
+          REMOTE
