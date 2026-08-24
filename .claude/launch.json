@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ctrip-web",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "uvicorn", "web.server:app", "--host", "127.0.0.1", "--port", "8000", "--log-level", "info"],
+      "port": 8000
+    }
+  ]
+}

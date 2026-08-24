@@ -1,4 +1,6 @@
-"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理 + ops。"""
+"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理 + ops。
+build-tag: 2026-08-24T13
+"""
 from __future__ import annotations
 import json as _json
 import secrets
