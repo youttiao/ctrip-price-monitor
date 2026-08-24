@@ -1,0 +1,12 @@
+[Unit]
+Description=Ctrip Server-Side Scraper (search + addInfo)
+After=network.target ctrip-web.service
+
+[Service]
+Type=oneshot
+User=ctrip
+WorkingDirectory=/opt/ctrip-price-monitor
+Environment="PATH=/opt/ctrip-price-monitor/.venv/bin"
+EnvironmentFile=/opt/ctrip-price-monitor/.env
+ExecStart=/opt/ctrip-price-monitor/.venv/bin/python scripts/server_scraper.py
+Nice=10

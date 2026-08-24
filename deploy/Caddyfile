@@ -1,0 +1,26 @@
+# /etc/caddy/Caddyfile or /opt/ctrip-price-monitor/Caddyfile
+# 把 80/443 反代到 uvicorn :8000。
+
+xiecheng.19880913.xyz {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # 静态资源 cache
+    @assets path /static/*
+    header @assets Cache-Control "public, max-age=3600"
+
+    # 健康检查
+    @health path /healthz
+    respond @health "ok" 200
+
+    log {
+        output file /var/log/caddy/ctrip.log {
+            roll_size 50MiB
+            roll_keep 5
+        }
+    }
+}

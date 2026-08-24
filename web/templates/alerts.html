@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}告警 · 携程哨兵{% endblock %}
+{% block body %}
+<div class="page">
+
+  <div class="page-header">
+    <div>
+      <h1>告警流</h1>
+      <div class="sub muted">最近 200 条</div>
+    </div>
+  </div>
+
+  {% if alerts %}
+  <div class="alert-list">
+    {% for a in alerts %}
+    <div class="alert-row {{ a.severity }}">
+      <div class="ts">{{ a.ts[:19].replace('T',' ') if a.ts else '' }}</div>
+      <div>
+        <span class="pill {{ 'danger' if a.severity == 'critical' else ('warn' if a.severity == 'warning' else 'muted') }}">
+          <span class="dot"></span>{{ a.severity }}
+        </span>
+      </div>
+      <div class="body">
+        <div class="title">
+          {{ a.type }} ·
+          {% if a.sku_name %}{{ a.sku_name }}{% else %}{{ a.shelf_type_name or '' }}{% endif %}
+        </div>
+        <div class="ctx">
+          <a href="/poi/{{ a.poi_viewid }}">{{ a.poi_name }}</a>
+          · {{ a.shelf_type_name or '-' }}
+          {% if a.vendor_id %} · vendorId {{ a.vendor_id }}{% endif %}
+          {% if a.webhook_status %} · <span class="muted">推送 {{ a.webhook_status }}</span>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <div class="icon">·</div>
+    <div>暂无告警</div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

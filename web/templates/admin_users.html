@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}用户管理 · 携程哨兵{% endblock %}
+{% block body %}
+<div class="page">
+
+  <div class="page-header">
+    <div>
+      <h1>用户管理</h1>
+      <div class="sub muted">目前只展示，不支持 UI 新增</div>
+    </div>
+  </div>
+
+  <div class="table">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>账号</th>
+          <th>角色</th>
+          <th>状态</th>
+          <th>注册</th>
+          <th>最近登录</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td class="mono">{{ u.id }}</td>
+          <td>{{ u.username }}</td>
+          <td>
+            <span class="pill {% if u.role == 'admin' %}ok{% else %}muted{% endif %}">
+              <span class="dot"></span>{{ u.role }}
+            </span>
+          </td>
+          <td>
+            <span class="pill {% if u.is_active %}ok{% else %}muted{% endif %}">
+              <span class="dot"></span>{% if u.is_active %}active{% else %}disabled{% endif %}
+            </span>
+          </td>
+          <td class="muted mono" style="font-size:var(--fs-xs)">{{ u.created_at[:16] if u.created_at else '-' }}</td>
+          <td class="muted mono" style="font-size:var(--fs-xs)">{{ u.last_login_at[:16] if u.last_login_at else '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

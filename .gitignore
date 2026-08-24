@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime
+data/
+.env
+*.log
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Captured / raw round data
+_captures/
+data/raw_rounds/
+
+# Build
+dist/
+build/

@@ -1,0 +1,10 @@
+[Unit]
+Description=Ctrip Round Parser Timer (every 1 min)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

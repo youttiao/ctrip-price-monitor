@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Vendor 管理 · 携程哨兵{% endblock %}
+{% block body %}
+<div class="page">
+
+  <div class="page-header">
+    <div>
+      <h1>Vendor 管理</h1>
+      <div class="sub muted">所有出现过的 vendor + 我已加入 my_vendors 的</div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-title">添加 vendorId 到我的列表</div>
+    <form method="post" action="/admin/vendors/add" class="flex gap-3">
+      <input class="form-row" style="flex:1" type="number" name="vendor_id" placeholder="vendorId（数字）" required>
+      <input class="form-row" style="flex:2" type="text" name="label" placeholder="备注（可选）">
+      <button class="btn primary" type="submit">加入</button>
+    </form>
+  </div>
+
+  <div class="table">
+    <table>
+      <thead>
+        <tr>
+          <th>vendorId</th>
+          <th>名称</th>
+          <th>品牌公司</th>
+          <th>许可证</th>
+          <th>最近出现</th>
+          <th>SKU 数</th>
+          <th>我的备注</th>
+          <th class="num">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for v in vendors %}
+        <tr class="{% if v.is_active %}is-mine{% endif %}">
+          <td class="mono">{{ v.vendor_id }}</td>
+          <td>{{ v.name }}</td>
+          <td class="muted">{{ v.brand_company_name or '-' }}</td>
+          <td class="muted mono" style="font-size:var(--fs-xs)">{{ v.licence_no or '-' }}</td>
+          <td class="muted mono" style="font-size:var(--fs-xs)">{{ v.last_seen_at[:16] if v.last_seen_at else '-' }}</td>
+          <td class="num">{{ v.sku_count or 0 }}</td>
+          <td>{{ v.label or '-' }}</td>
+          <td class="num">
+            {% if v.vendor_id %}
+              <form method="post" action="/admin/vendors/{{ v.vendor_id }}/toggle" style="display:inline">
+                <button class="btn sm" type="submit">{% if v.is_active %}停用{% else %}启用{% endif %}</button>
+              </form>
+              <form method="post" action="/admin/vendors/{{ v.vendor_id }}/delete" style="display:inline"
+                    onsubmit="return confirm('确认删除？')">
+                <button class="btn sm danger" type="submit">删</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="empty">还没有 vendor 数据 · 等待下一轮 round</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

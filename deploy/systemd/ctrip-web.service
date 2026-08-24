@@ -1,0 +1,20 @@
+[Unit]
+Description=Ctrip Web Dashboard (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=ctrip
+WorkingDirectory=/opt/ctrip-price-monitor
+Environment="PATH=/opt/ctrip-price-monitor/.venv/bin"
+EnvironmentFile=/opt/ctrip-price-monitor/.env
+ExecStart=/opt/ctrip-price-monitor/.venv/bin/uvicorn web.server:app \
+    --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ctrip-price-monitor/data
+
+[Install]
+WantedBy=multi-user.target

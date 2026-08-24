@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Server-side scraper：用最新 cookies 调 search + addInfo。
+
+30 分钟一轮。每轮：
+    1. 读 cookies 表最新一条
+    2. 对每个 enabled POI：
+       - search（distributorSearchObj）→ 拿 resources
+       - 对每个 resource 调 resourceAddInfo 拿 ticketGroupId
+       - POST 到本地 ingest endpoint（带 X-Ingest-Secret）
+
+注意事项：
+    - 只调 search + addInfo，不调 getProductShelf（后者要 w-payload-source header）
+    - 如果没有 cookies，跳过本轮
+"""
+from __future__ import annotations
+import argparse, json, os, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+# 让脚本能 `import ctrip_core` 不论从哪儿执行
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from ctrip_core import selectors as S  # noqa: E402
+
+
+def load_latest_cookies(db_path: str) -> dict | None:
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT blob_json FROM cookies ORDER BY uploaded_at DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return json.loads(row[0])
+
+
+def load_enabled_pois(db_path: str) -> list[dict]:
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT viewid, name, district_id FROM pois WHERE enabled=1 ORDER BY viewid"
+    ).fetchall()
+    conn.close()
+    return [{"viewid": r[0], "name": r[1], "district_id": r[2]} for r in rows]
+
+
+def fetch_search(client: httpx.Client, cookies: dict, poi: dict, use_date: str | None = None) -> dict:
+    """调一次 search（distributorSearchObj）。"""
+    body = S.search_payload(poi["viewid"], use_date=use_date)
+    r = client.post(S.SEARCH_URL, json=body, headers=S.build_headers(cookies, "search"))
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_add_info(client: httpx.Client, cookies: dict, resource_id: int, poi_viewid: int) -> dict:
+    body = S.addinfo_payload(resource_id, poi_viewid)
+    r = client.post(S.ADDINFO_URL, json=body, headers=S.build_headers(cookies, "addinfo"))
+    r.raise_for_status()
+    return r.json()
+
+
+def collect_round(poi: dict, cookies: dict) -> dict:
+    """组装一个 round（mock round：没有 getProductShelf，只有 search + addInfo）。
+
+    Returns: dict that matches the extension ingest schema (poi + requests).
+    """
+    captured = datetime.now(timezone.utc).isoformat()
+    requests: list[dict] = []
+
+    with httpx.Client(timeout=20) as client:
+        # 1) search
+        try:
+            search_resp = fetch_search(client, cookies, poi)
+            requests.append({
+                "url": S.SEARCH_URL,
+                "method": "POST",
+                "postData": {"text": json.dumps(S.search_payload(poi["viewid"]))},
+                "_response": search_resp,
+            })
+        except Exception as e:
+            return {"capturedAt": captured, "poi": poi, "error": f"search failed: {e}", "requests": []}
+
+        # 2) addInfo for each resource
+        resources = S.extract_resource_ids(search_resp)
+        for rid in resources[:S.MAX_ADDINFO_PER_ROUND]:
+            try:
+                info = fetch_add_info(client, cookies, rid, poi["viewid"])
+                requests.append({
+                    "url": S.ADDINFO_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.addinfo_payload(rid, poi["viewid"]))},
+                    "_response": info,
+                })
+            except Exception as e:
+                # 不让单条 addInfo 失败搞砸整轮
+                requests.append({
+                    "url": S.ADDINFO_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.addinfo_payload(rid, poi["viewid"]))},
+                    "_error": str(e),
+                })
+
+    return {
+        "capturedAt": captured,
+        "poi": poi,
+        "requests": requests,
+    }
+
+
+def post_round(server: str, secret: str, payload: dict) -> tuple[int, dict]:
+    r = httpx.post(
+        f"{server.rstrip('/')}/api/ingest/round",
+        json=payload,
+        headers={"X-Ingest-Secret": secret, "X-Source": "server"},
+        timeout=15,
+    )
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, {"raw": r.text}
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--db", default=os.getenv("CTRIP_DB_PATH", "data/monitor.db"))
+    p.add_argument("--server", default=os.getenv("CTRIP_SERVER", "http://127.0.0.1:8000"))
+    p.add_argument("--secret", default=os.getenv("INGEST_SECRET", ""))
+    args = p.parse_args()
+
+    if not args.secret:
+        print("FATAL: --secret or $INGEST_SECRET required", file=sys.stderr)
+        sys.exit(2)
+
+    cookies = load_latest_cookies(args.db)
+    if not cookies:
+        print("SKIP: no cookies in DB yet")
+        return
+
+    pois = load_enabled_pois(args.db)
+    if not pois:
+        print("SKIP: no enabled POIs")
+        return
+
+    for poi in pois:
+        print(f"[{poi['viewid']}] {poi['name']} ...", flush=True)
+        try:
+            payload = collect_round(poi, cookies)
+        except Exception as e:
+            print(f"  collect failed: {e}", file=sys.stderr)
+            continue
+        if not payload.get("requests"):
+            print(f"  no requests, skip")
+            continue
+        code, resp = post_round(args.server, args.secret, payload)
+        print(f"  -> {code} {resp.get('round_id','?')[:8] if isinstance(resp, dict) else resp}")
+
+
+if __name__ == "__main__":
+    main()

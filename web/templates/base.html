@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280">
+  <title>{% block title %}携程哨兵{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+{% if user %}
+<div class="topnav">
+  <div class="brand"><span class="dot"></span>携程哨兵</div>
+  <nav>
+    {% set path = request.url.path %}
+    <a href="/" class="{% if path == '/' %}active{% endif %}">总览</a>
+    <a href="/myfootprint" class="{% if path.startswith('/myfootprint') %}active{% endif %}">我的足迹</a>
+    <a href="/alerts" class="{% if path.startswith('/alerts') %}active{% endif %}">告警</a>
+    {% if user.role == 'admin' %}
+      <a href="/admin/vendors" class="{% if path.startswith('/admin') %}active{% endif %}">管理</a>
+    {% endif %}
+  </nav>
+  <div class="right">
+    <span class="user">{{ user.username }} · {{ user.role }}</span>
+    <form method="post" action="/logout" style="margin:0">
+      <button class="btn sm ghost" type="submit">退出</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% block body %}{% endblock %}
+
+</body>
+</html>
