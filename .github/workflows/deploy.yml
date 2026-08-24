@@ -13,6 +13,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      vendor_id:
+        description: '可选 vendor_id（仅做 vendor_add 用，不影响部署）'
+        required: false
+        type: string
+      vendor_label:
+        description: 'vendor 的 label'
+        required: false
+        type: string
 
 concurrency:
   group: deploy-production
@@ -60,10 +69,14 @@ jobs:
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           CTRIP_DB_PATH: /opt/ctrip-price-monitor/data/monitor.db
           CTRIP_RAW_DIR: /opt/ctrip-price-monitor/data/raw_rounds
+          CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
+          VID: ${{ inputs.vendor_id }}
+          VID_LABEL: ${{ inputs.vendor_label }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
             set -euo pipefail
             cd /opt/ctrip-price-monitor
+            ADMIN_PWD="${CTRIP_ADMIN_PASSWORD}"
 
             # 写 .env（从 GH secrets 注入；API_SECRET 仅用于首次 init_db）
             printf 'API_SECRET=%s\nWEBHOOK_URL=%s\nWEBHOOK_SECRET=%s\nCTRIP_DB_PATH=%s\nCTRIP_RAW_DIR=%s\n' \
@@ -128,6 +141,27 @@ jobs:
             sleep 3
             curl -sf http://127.0.0.1:8000/healthz || (echo "healthz failed"; sudo journalctl -u ctrip-web -n 30 --no-pager; exit 1)
             echo "DEPLOY OK"
+
+            # 可选: vendor add (workflow_dispatch 时手动传 vendor_id)
+            if [[ -n "${VID:-}" ]]; then
+              echo "=== vendor_add ${VID} (label='${VID_LABEL:-}') ==="
+              .venv/bin/python - <<'PYEOF'
+import os, urllib.parse, http.cookiejar, urllib.request, sys
+ADMIN_PWD = os.environ["ADMIN_PWD"]
+VID = os.environ["VID"]
+LABEL = os.environ.get("VID_LABEL", "")
+jar = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+opener.addheaders = [('User-Agent', 'deploy-vendor-add/1.0')]
+data = urllib.parse.urlencode({"username": "admin", "password": ADMIN_PWD}).encode()
+r = opener.open("http://127.0.0.1:8000/login", data=data)
+sid = next((c.value for c in jar if c.name == "ctrip_sid"), None)
+if not sid: sys.exit("no sid after login")
+data = urllib.parse.urlencode({"vendor_id": VID, "label": LABEL}).encode()
+r = opener.open("http://127.0.0.1:8000/admin/vendors/add", data=data)
+print("add:", r.status, r.url)
+PYEOF
+            fi
           REMOTE
 
       - name: Summary
