@@ -16,21 +16,41 @@
   async function triggerCapture(btn){
     btn.disabled = true;
     btn.textContent = '解析中…';
+    btn.classList.remove('ok','info','err');
     const status = document.getElementById('captureStatus');
-    status.textContent = '调用 /admin/capture/trigger';
+    status.textContent = '调用 /admin/capture/trigger …';
+    status.style.color = '';
     try {
       const r = await fetch('/admin/capture/trigger', {method: 'POST', credentials: 'same-origin'});
       const j = await r.json();
+      const d = j.detail || {};
+      const stdout = (d.stdout || '').trim();
       if (j.ok) {
-        status.textContent = '✓ 完成于 ' + (j.ts || '').slice(11,19);
-        setTimeout(()=>location.reload(), 800);
+        // stdout 形如 "round 3: parsed 7 SKUs\nround 4: ERROR ..." → 汇总
+        const okLines = stdout.split('\n').filter(l => l.includes('parsed'));
+        const errLines = stdout.split('\n').filter(l => l.includes('ERROR'));
+        if (okLines.length) {
+          const skus = okLines.reduce((s,l)=>s+(parseInt(l.match(/parsed (\d+)/)?.[1])||0), 0);
+          status.textContent = `✓ 已解析 ${okLines.length} 轮 / ${skus} SKU · ${(j.ts||'').slice(11,19)}`;
+          btn.classList.add('ok');
+          // 5 秒后再刷新，把"最近告警/KPI"同步上去
+          setTimeout(()=>location.reload(), 5000);
+        } else if (stdout.startsWith('no pending rounds')) {
+          status.textContent = 'ℹ 没有 pending 轮（extension 没在抓或解析任务刚跑过）';
+          btn.classList.add('info');
+        } else {
+          status.textContent = '✓ 完成 · ' + (j.ts||'').slice(11,19) + ' · ' + stdout.slice(0,80);
+        }
       } else if (j.busy) {
-        status.textContent = '⏳ 解析任务进行中，等下次';
+        status.textContent = '⏳ ' + (d.detail || '解析任务进行中');
       } else {
-        status.textContent = '✗ ' + (j.detail && j.detail.detail || JSON.stringify(j).slice(0,80));
+        const errMsg = d.detail || JSON.stringify(d).slice(0,120);
+        status.textContent = '✗ ' + errMsg;
+        btn.classList.add('err');
       }
     } catch(e) {
       status.textContent = '✗ ' + e.message;
+      btn.classList.add('err');
     } finally {
       btn.disabled = false;
       btn.textContent = '▶ 立即跑解析';

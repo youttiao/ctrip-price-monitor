@@ -1,0 +1,21 @@
+# /etc/caddy/Caddyfile — 主入口
+#
+# CI 永远不主动覆盖这个文件（保护同机其他项目如 feizhu.19880913.xyz
+# 的站点定义）。只在以下情况会被 CI 替换：
+#   1. VPS 上完全不存在 /etc/caddy/Caddyfile（首次部署）
+#   2. VPS 现有主 Caddyfile 缺少 `import /etc/caddy/sites/*.caddy`
+#      这一行（追加 import 指令让 sites/ 下文件生效）
+#
+# 站点文件按域名独立放在 /etc/caddy/sites/<name>.caddy：
+#   - ctrip.caddy   ← 本项目（xiecheng.19880913.xyz）
+#   - 其他 .caddy   ← 同机其他项目（如 feizhu.19880913.xyz）
+#
+# 加新站点只需在 sites/ 目录加文件，CI 不动这个主 Caddyfile。
+
+import /etc/caddy/sites/*.caddy
+
+# 全局：日志目录兜底（各站点可在自己 .caddy 里覆盖）
+{
+    admin off
+    auto_https off
+}

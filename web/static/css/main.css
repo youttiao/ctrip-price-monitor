@@ -673,6 +673,21 @@ code {
   padding: 3px var(--sp-3);
   font-size: var(--fs-xs);
 }
+.btn.ok {
+  background: var(--moss, #5b7c5a);
+  border-color: var(--moss, #5b7c5a);
+  color: var(--paper);
+}
+.btn.info {
+  background: var(--paper);
+  border-color: var(--rule-strong);
+  color: var(--ink-2);
+}
+.btn.err {
+  background: var(--crimson);
+  border-color: var(--crimson);
+  color: var(--paper);
+}
 
 /* ─────────────────────────────────────────────────────────
    Alert list：朱批

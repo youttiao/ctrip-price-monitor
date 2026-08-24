@@ -108,11 +108,40 @@ jobs:
               echo "✓ DB initialized"
             fi
 
-            # caddy
+            # caddy — 三步，CI 只动两个文件：
+            #   1) /etc/caddy/Caddyfile 仅当完全缺失 / 没有 import 行（首次/恢复）
+            #   2) /etc/caddy/sites/ctrip.caddy diff 不同才同步（带 .bak 备份）
+            #   3) 其他 .caddy（feizhu 等）我们永不碰
             if command -v caddy >/dev/null 2>&1; then
-              if ! sudo diff -q deploy/Caddyfile /etc/caddy/Caddyfile >/dev/null 2>&1; then
-                sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+              sudo mkdir -p /etc/caddy/sites
+
+              # 1) 主 Caddyfile 健康检查（不覆盖，只补 import）
+              if [[ ! -f /etc/caddy/Caddyfile ]]; then
+                echo "caddy: 主 Caddyfile 不存在 → 用 deploy/Caddyfile.main 初始化"
+                sudo cp deploy/Caddyfile.main /etc/caddy/Caddyfile
+                CHANGED=1
+              elif ! sudo grep -qE '^\s*import\s+/etc/caddy/sites' /etc/caddy/Caddyfile; then
+                echo "caddy: 主 Caddyfile 缺 import → 备份并追加"
+                sudo cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date -u +%Y%m%d-%H%M%S)"
+                sudo bash -c 'printf "\nimport /etc/caddy/sites/*.caddy\n" >> /etc/caddy/Caddyfile'
+                CHANGED=1
+              fi
+
+              # 2) 站点文件 diff 同步
+              if ! sudo diff -q deploy/sites/ctrip.caddy /etc/caddy/sites/ctrip.caddy >/dev/null 2>&1; then
+                echo "caddy: sites/ctrip.caddy 有更新"
+                if [[ -f /etc/caddy/sites/ctrip.caddy ]]; then
+                  sudo cp /etc/caddy/sites/ctrip.caddy "/etc/caddy/sites/ctrip.caddy.bak.$(date -u +%Y%m%d-%H%M%S)"
+                fi
+                sudo cp deploy/sites/ctrip.caddy /etc/caddy/sites/ctrip.caddy
+                CHANGED=1
+              fi
+
+              # 3) 有变更才 reload
+              if [[ "${CHANGED:-0}" == "1" ]]; then
                 sudo systemctl reload caddy || true
+              else
+                echo "caddy: 无变更，跳过 reload"
               fi
             else
               echo "WARN: caddy not installed; skipping Caddyfile sync"
