@@ -13,13 +13,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      vendor_id:
-        description: 'Optional vendor_id for ad-hoc vendor add'
-        required: false
-      vendor_label:
-        description: 'Label for the vendor'
-        required: false
 
 concurrency:
   group: deploy-production
@@ -68,8 +61,8 @@ jobs:
           CTRIP_DB_PATH: /opt/ctrip-price-monitor/data/monitor.db
           CTRIP_RAW_DIR: /opt/ctrip-price-monitor/data/raw_rounds
           CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
-          VID: ${{ inputs.vendor_id }}
-          VID_LABEL: ${{ inputs.vendor_label }}
+          VID: "16540"
+          VID_LABEL: "北京旭冉假期旅游有限公司"
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<REMOTE
             set -euo pipefail
