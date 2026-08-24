@@ -144,28 +144,6 @@ jobs:
           CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
         run: |
           mkdir -p ~/.ssh
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
-            set -euo pipefail
-            cd /opt/ctrip-price-monitor
-            export ADMIN_PWD="${CTRIP_ADMIN_PASSWORD}"
-            export VID="16540"
-            export LABEL="vendor-16540"
-            echo "=== vendor_add $VID ==="
-            .venv/bin/python - <<'PYEOF'
-import os, urllib.parse, http.cookiejar, urllib.request, sys
-ADMIN_PWD = os.environ["ADMIN_PWD"]
-VID = os.environ["VID"]
-LABEL = os.environ["LABEL"]
-jar = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-opener.addheaders = [("User-Agent", "gh-deploy-vendor-add/1.0")]
-data = urllib.parse.urlencode({"username": "admin", "password": ADMIN_PWD}).encode()
-r = opener.open("http://127.0.0.1:8000/login", data=data)
-sid = next((c.value for c in jar if c.name == "ctrip_sid"), None)
-if not sid:
-    sys.exit("no sid after login")
-data = urllib.parse.urlencode({"vendor_id": VID, "label": LABEL}).encode()
-r = opener.open("http://127.0.0.1:8000/admin/vendors/add", data=data)
-print("add:", r.status, r.url)
-PYEOF
-REMOTE
+          chmod 600 ~/.ssh/id_ed25519 2>/dev/null || true
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
+            "cd /opt/ctrip-price-monitor && ADMIN_PWD='$CTRIP_ADMIN_PASSWORD' .venv/bin/python scripts/vendor_add.py 16540 vendor-16540"
