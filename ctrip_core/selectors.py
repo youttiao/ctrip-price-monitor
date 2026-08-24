@@ -22,6 +22,16 @@ SELF_VENDOR_ID = 999999
 SHELF_NAME_BLACKLIST = ("一日游", "酒店", "用车", "餐饮", "跟团", "司导", "向导",
                         "演出", "剧场", "文创店")
 
+# viewid → poiId 兜底映射（日历接口需要 URL 路径里的 poiId，不是 viewid）。
+# 优先从 search 响应抽 poiId，抽不到用这里。新 POI 上线时需手动补。
+POI_VIEWID_TO_POI_ID: dict[int, str] = {
+    233: "75599",    # 天坛公园
+    5153: "76599",   # 雍和宫
+    231: "75597",    # 颐和园
+    5208: "76625",   # 圆明园
+    5170: "76610",   # 景山公园
+}
+
 # Cookies 必需字段
 REQUIRED_COOKIES = ("GUID", "cticket", "bticket", "vbkticket",
                     "login_uid", "Union")
@@ -32,7 +42,7 @@ SID = 1693366
 
 # 服务器后台能用的接口（不需要 w-payload-source）
 # 注意：服务器后台拿不到 displayPrice，要拿价格必须靠扩展。
-SERVER_FETCHABLE_ENDPOINTS = {ADDINFO_URL, SEARCH_URL}
+SERVER_FETCHABLE_ENDPOINTS = {ADDINFO_URL, SEARCH_URL, PRICE_CAL_URL}
 
 # 单 POI 单轮最多调多少个 addInfo（避免无谓请求）
 MAX_ADDINFO_PER_ROUND = 30
@@ -129,24 +139,149 @@ def addinfo_payload(resource_id: int, poi_viewid: int) -> dict:
     }
 
 
-def extract_resource_ids(search_resp: dict) -> list[int]:
-    """从 search 响应里抽取 resourceId 列表。"""
-    out: list[int] = []
-    # 实测：data.distributorSearchObj.resourceList[] 或 data.resourceList[]
-    candidates = []
-    data = search_resp.get("data") or {}
+# ── getProductPriceCalendar (priceCalendar) ──
+
+_CALENDAR_TAGS: list[dict] = [
+    {"key": "relatedResource", "value": "newLogic"},
+    {"key": "needReturnUnavailableDate", "value": "true"},
+    {"key": "noNeedTicketRelationResources", "value": "true"},
+    {"key": "needSelectDateFirst", "value": "true"},
+    {"key": "needSelectDateFirstV2", "value": "true"},
+    {"key": "needSelectDateSort", "value": "true"},
+    {"key": "supportAlternateTkt", "value": "true"},
+    {"key": "needForcedLogin", "value": "T"},
+    {"key": "needCardTagInfo", "value": "true"},
+    {"key": "needPackingVersion3", "value": "true"},
+    {"key": "needReservationMark", "value": "true"},
+    {"key": "needRateLimit", "value": "true"},
+    {"key": "needUnSaleAloneRes", "value": "true"},
+    {"key": "needAggregationInfo", "value": "true"},
+    {"key": "callRecallPK", "value": "pkOneOrMore"},
+    {"key": "seckill", "value": "newSeckill"},
+    {"key": "needResourceMinPriceInfo", "value": "true"},
+    {"key": "needCalcTicketPriceCalendar", "value": "true"},
+]
+
+
+def price_calendar_payload(rid: int, poi_id_str: str, cookies: dict) -> dict:
+    """getProductPriceCalendar 的 payload。
+
+    poi_id_str 必须是 URL 路径里的 poiId（字符串，如 "75599"），不是 viewid。
+    cookies 必须含 GUID，会被写入 head.cid（携程用这个鉴权）。
+    """
+    return {
+        "bizLineType": 4,
+        "id": "",
+        "token": "",
+        "needAggregations": True,
+        "needBasicInfo": True,
+        "needSaleProperties": True,
+        "needUnavailableSaleDates": True,
+        "needSaleStatistics": True,
+        "needTags": True,
+        "tags": _CALENDAR_TAGS,
+        "filter": {"recommendScan": False, "beginDate": "", "endDate": ""},
+        "poiId": poi_id_str,
+        "mainResourceIds": [rid],
+        "head": _common_head(cookies),
+        "clientInfo": {
+            "currency": "CNY",
+            "locale": "zh-CN",
+            "pageId": 10650097502,
+            "channelId": 116,
+            "extension": [],
+            "oriSyscode": "09",
+            "syscode": "09",
+            "cid": "",
+            "appPlatform": "",
+            "ic_traceid": "",
+        },
+        "enviroment": "PROD",
+    }
+
+
+def _extract_resource_candidates(search_resp: dict) -> list[dict]:
+    """从 search 响应里挑出所有 dict 形式的候选元素（不假设 shape）。
+
+    历史兼容：2025-08 前 `data` 是 dict（`data.distributorSearchObj.resourceList[]`）；
+    携程 8 月改版后 `data` 是 list（mixed-category 搜索建议，含 district/author/
+    sight/... 等）。这条路径上不再有"本 POI 的资源列表"，所以 server-side
+    找不到 product rid → 必须靠扩展抓 shelf。
+
+    返回所有 dict 候选，调用方按需过滤（type=sight 也不一定是本 POI 的产品）。
+    """
+    out: list[dict] = []
+    if not isinstance(search_resp, dict):
+        return out
+    data = search_resp.get("data")
+    if isinstance(data, list):
+        out.extend(e for e in data if isinstance(e, dict))
+        return out
+    if not isinstance(data, dict):
+        return out
     for k in ("distributorSearchObj", "resourceList", "resources"):
         v = data.get(k)
         if isinstance(v, list):
-            candidates = v
-            break
+            out.extend(e for e in v if isinstance(e, dict))
+            return out
         if isinstance(v, dict) and isinstance(v.get("resourceList"), list):
-            candidates = v["resourceList"]
-            break
-    for r in candidates:
-        if not isinstance(r, dict):
-            continue
+            out.extend(e for e in v["resourceList"] if isinstance(e, dict))
+            return out
+    return out
+
+
+def extract_resource_ids(search_resp: dict) -> list[int]:
+    """从 search 响应里抽取 resourceId 列表（兼容 list & dict 两种 `data` shape）。"""
+    out: list[int] = []
+    for r in _extract_resource_candidates(search_resp):
         rid = r.get("resourceId") or r.get("id")
         if isinstance(rid, int):
             out.append(rid)
+    return out
+
+
+def extract_search_resources(search_resp: dict) -> list[tuple[int, str | None]]:
+    """返回 [(rid, poiId_str_or_None), ...]。兼容 list & dict 两种 `data` shape。
+
+    poiId 抽取路径（按优先级）：
+      1) data.poiId
+      2) data.distributorSearchObj.poiId / spotid
+      3) resources[].poiId
+
+    都找不到时返回 None，调用方应查 POI_VIEWID_TO_POI_ID 兜底。
+
+    注：2025-08 后 search 返回 mixed-category 列表，没有本 POI 产品，调用方应
+    期待空列表（→ server-scraper 这轮不会有 addInfo/priceCal 调用）。
+    """
+    if not isinstance(search_resp, dict):
+        return []
+    data = search_resp.get("data")
+    top_poi_str: str | None = None
+    candidates: list[dict] = []
+
+    if isinstance(data, list):
+        candidates = [e for e in data if isinstance(e, dict)]
+    elif isinstance(data, dict):
+        top_poi_id = data.get("poiId")
+        top_poi_str = str(top_poi_id) if top_poi_id is not None else None
+        for k in ("distributorSearchObj", "resourceList", "resources"):
+            v = data.get(k)
+            if isinstance(v, list):
+                candidates = [e for e in v if isinstance(e, dict)]
+                break
+            if isinstance(v, dict) and isinstance(v.get("resourceList"), list):
+                candidates = [e for e in v["resourceList"] if isinstance(e, dict)]
+                nested_poi = v.get("poiId") or v.get("spotid")
+                if top_poi_str is None and nested_poi is not None:
+                    top_poi_str = str(nested_poi)
+                break
+
+    out: list[tuple[int, str | None]] = []
+    for r in candidates:
+        rid = r.get("resourceId") or r.get("id")
+        if not isinstance(rid, int):
+            continue
+        rid_poi = r.get("poiId")
+        rid_poi_str = str(rid_poi) if rid_poi is not None else None
+        out.append((rid, rid_poi_str or top_poi_str))
     return out

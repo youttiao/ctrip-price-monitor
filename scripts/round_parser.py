@@ -87,6 +87,26 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
 
+    # 2.5) price_day 批量插入（每个 rid × 每个 sale_date × 每个 package_id 一行）
+    pd_rows = [(
+        round_pk, pd_row["resource_id"], poi_viewid,
+        pd_row["sale_date"],
+        pd_row["min_price"], pd_row["sale_price"],
+        pd_row["inventory"], int(pd_row["available"]) if pd_row["available"] is not None else None,
+        pd_row["package_id"],
+        json.dumps(pd_row.get("raw") or {}, ensure_ascii=False),
+    ) for pd_row in parsed["price_days"]
+        if pd_row.get("sale_date") and pd_row.get("resource_id")]
+
+    if pd_rows:
+        conn.executemany("""
+            INSERT OR REPLACE INTO price_day (
+                round_id, resource_id, poi_viewid,
+                sale_date, min_price, sale_price,
+                inventory, available, package_id, raw
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, pd_rows)
+
     # 3) rank_history
     rh_rows = compute_rank_history(conn, round_pk, poi_viewid)
     if rh_rows:

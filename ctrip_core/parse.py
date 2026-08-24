@@ -175,7 +175,9 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
             continue
         for r in (b.get("data") or {}).get("resources", []) or []:
             rid = r.get("id")
-            if rid not in rids:
+            # 当 rids 为空（无 shelf 数据，server-scraper 场景），保留所有 vendor。
+            # 否则只保留 shelf_lookup 里有匹配的 rid。
+            if rids and rid not in rids:
                 continue
             vi = r.get("vendorInfo") or {}
             if not vi or not vi.get("vendorId"):

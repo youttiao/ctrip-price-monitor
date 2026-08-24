@@ -72,11 +72,12 @@ CREATE TABLE IF NOT EXISTS price_day (
     package_id      INTEGER,
     raw             TEXT,
     FOREIGN KEY (round_id) REFERENCES rounds(id) ON DELETE CASCADE,
-    UNIQUE(round_id, resource_id, sale_date)
+    UNIQUE(round_id, resource_id, sale_date, package_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pd_viewid ON price_day(poi_viewid);
 CREATE INDEX IF NOT EXISTS idx_pd_date ON price_day(sale_date);
 CREATE INDEX IF NOT EXISTS idx_pd_resid ON price_day(resource_id);
+CREATE INDEX IF NOT EXISTS idx_pd_pkg ON price_day(package_id);
 
 CREATE TABLE IF NOT EXISTS vendors (
     vendor_id       INTEGER PRIMARY KEY,
