@@ -1,6 +1,9 @@
 """解析器单测：拿 _captures/ 已有抓包 JSON 验证 parse_round() 行为。
 
 跑：pytest tests/test_parse.py -v
+
+注意：_captures/ 在 .gitignore 里（真实 API 响应，不进 repo）。
+本仓库只跑合成数据的 round-trip 测试；本地有 _captures/ 时跑全量。
 """
 import json
 from pathlib import Path
@@ -10,6 +13,13 @@ import pytest
 from ctrip_core.parse import parse_round
 
 CAPTURES = Path(__file__).resolve().parents[1] / "_captures"
+HAS_CAPTURES = CAPTURES.exists() and any(CAPTURES.glob("*.json"))
+
+
+pytestmark = pytest.mark.skipif(
+    not HAS_CAPTURES,
+    reason="_captures/ not in repo (CI only runs synthetic tests)",
+)
 
 
 def load(name: str):
