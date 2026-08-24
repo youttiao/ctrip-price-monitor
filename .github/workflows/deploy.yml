@@ -17,11 +17,9 @@ on:
       vendor_id:
         description: 'Optional vendor_id for ad-hoc vendor add'
         required: false
-        type: string
       vendor_label:
         description: 'Label for the vendor'
         required: false
-        type: string
 
 concurrency:
   group: deploy-production
