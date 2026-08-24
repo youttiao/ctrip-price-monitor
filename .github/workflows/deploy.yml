@@ -1,0 +1,118 @@
+name: deploy
+
+# 推送到 main → SSH 到 racknerd19 → 拉代码 → 重启服务
+# 所需 secrets（gh repo edit 配置）:
+#   VPS_SSH_KEY       private key (无 passphrase)
+#   VPS_USER          默认 ctrip
+#   VPS_HOST          默认 racknerd19 IP / hostname
+#   INGEST_SECRET     服务端 + 扩展共用的 ingest 头
+#   COOKIE_SYNC_SECRET cookie 同步头
+#   WEBHOOK_URL       告警回调 (可选)
+#   WEBHOOK_SECRET    回调签名 (可选)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code to VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER || 'ctrip' }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          rsync -avz --delete \
+            --exclude '.venv' \
+            --exclude 'data/' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude '*.pyc' \
+            --exclude '.env' \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no" \
+            ./ "$VPS_USER@$VPS_HOST:/opt/ctrip-price-monitor/"
+
+      - name: Apply env + restart on VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER || 'ctrip' }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+          COOKIE_SYNC_SECRET: ${{ secrets.COOKIE_SYNC_SECRET }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          CTRIP_DB_PATH: /opt/ctrip-price-monitor/data/monitor.db
+          CTRIP_RAW_DIR: /opt/ctrip-price-monitor/data/raw_rounds
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
+            set -euo pipefail
+            cd /opt/ctrip-price-monitor
+
+            # 写 .env（从 GH secrets 注入）
+            cat > .env <<EOF
+            INGEST_SECRET=${INGEST_SECRET}
+            COOKIE_SYNC_SECRET=${COOKIE_SYNC_SECRET}
+            WEBHOOK_URL=${WEBHOOK_URL}
+            WEBHOOK_SECRET=${WEBHOOK_SECRET}
+            CTRIP_DB_PATH=${CTRIP_DB_PATH}
+            CTRIP_RAW_DIR=${CTRIP_RAW_DIR}
+            EOF
+            chmod 600 .env
+
+            # venv（如果还没有）
+            if [[ ! -d .venv ]]; then
+              sudo python3.11 -m venv .venv || python3 -m venv .venv
+            fi
+            .venv/bin/pip install -q --upgrade pip
+            .venv/bin/pip install -q -r requirements.txt
+
+            # service user（首次）
+            if ! id -u ctrip >/dev/null 2>&1; then
+              sudo useradd --system --shell /usr/sbin/nologin --home-dir /opt/ctrip-price-monitor ctrip || true
+            fi
+            sudo mkdir -p /opt/ctrip-price-monitor/data
+            sudo chown -R ctrip:ctrip /opt/ctrip-price-monitor/data 2>/dev/null || true
+
+            # systemd units
+            sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
+            sudo systemctl daemon-reload
+
+            # 启动 / 重启
+            sudo systemctl enable --now ctrip-web.service
+            sudo systemctl restart ctrip-web.service
+            sudo systemctl enable ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer
+            sudo systemctl restart ctrip-scraper.timer ctrip-parser.timer ctrip-retention.timer || true
+
+            # caddy
+            if [[ -f /etc/caddy/Caddyfile ]] && ! sudo diff -q Caddyfile /etc/caddy/Caddyfile >/dev/null; then
+              sudo cp Caddyfile /etc/caddy/Caddyfile
+              sudo systemctl reload caddy || true
+            fi
+
+            # 健康检查
+            sleep 3
+            curl -sf http://127.0.0.1:8000/healthz || (echo "healthz failed"; sudo journalctl -u ctrip-web -n 30 --no-pager; exit 1)
+            echo "DEPLOY OK"
+          REMOTE
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "✅ Deploy complete. Health: http://${{ secrets.VPS_HOST }}/healthz"
