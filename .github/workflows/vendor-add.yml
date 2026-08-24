@@ -1,18 +1,18 @@
-name: "vendor-add"
+name: vendor-add
 
 # SSH 到 VPS → 用 admin 凭据登录 web → POST /admin/vendors/add
 # 也顺手写 my_vendors 的 label/stub（API 已做）
 
-"on":
+on:
   workflow_dispatch:
     inputs:
       vendor_id:
-        description: "vendor_id (integer)"
+        description: 'vendor_id (integer)'
         required: true
       label:
-        description: "可选 label"
+        description: '可选 label'
         required: false
-        default: ""
+        default: ''
 
 jobs:
   add:
@@ -34,34 +34,31 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash <<REMOTE
             set -euo pipefail
             cd /opt/ctrip-price-monitor
             ADMIN_PWD="${CTRIP_ADMIN_PASSWORD}"
-            echo "admin pwd len: ${#ADMIN_PWD}"
+            VID_VAL="${VID}"
+            LABEL_VAL="${LABEL}"
+            echo "admin pwd len: \${#ADMIN_PWD}, vid=\${VID_VAL}"
 
-            # 用 python 单次完成 login + POST add
-            VID="$VID"
-            LABEL="$LABEL"
-
-            .venv/bin/python - <<PYEOF
-import urllib.parse, http.cookiejar, urllib.request, sys
+            .venv/bin/python - <<'PYEOF'
+import os, urllib.parse, http.cookiejar, urllib.request, sys
+ADMIN_PWD = os.environ["ADMIN_PWD"]
+VID = os.environ["VID_VAL"]
+LABEL = os.environ["LABEL_VAL"]
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 opener.addheaders = [('User-Agent', 'workflow-vendor-add/1.0')]
-
-# login
-data = urllib.parse.urlencode({"username": "admin", "password": "${ADMIN_PWD}"}).encode()
+data = urllib.parse.urlencode({"username": "admin", "password": ADMIN_PWD}).encode()
 r = opener.open("http://127.0.0.1:8000/login", data=data)
 print("login:", r.status)
 sid = next((c.value for c in jar if c.name == "ctrip_sid"), None)
 print("sid:", sid and sid[:8] + "…")
 if not sid:
     sys.exit("no sid after login")
-
-# vendor add
-data = urllib.parse.urlencode({"vendor_id": "${VID}", "label": "${LABEL}"}).encode()
+data = urllib.parse.urlencode({"vendor_id": VID, "label": LABEL}).encode()
 r = opener.open("http://127.0.0.1:8000/admin/vendors/add", data=data)
 print("add:", r.status, r.url)
 PYEOF
-          REMOTE
+REMOTE
