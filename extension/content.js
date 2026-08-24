@@ -166,10 +166,21 @@
     }
   });
 
-  // 初始化
+  // 初始化：先装一次，再在几个时点重装（防 Ctrip SDK 在 document_start 之后
+  // 覆盖 window.fetch / XMLHttpRequest.prototype.open/send）。
   hookFetch();
   hookXHR();
   installPerfObserver();
+
+  // Re-hook on lifecycle events + periodically for the first 10s.
+  const reinstall = () => { hookFetch(); hookXHR(); };
+  document.addEventListener("DOMContentLoaded", reinstall);
+  window.addEventListener("load", reinstall);
+  let ticks = 0;
+  const tickId = setInterval(() => {
+    reinstall();
+    if (++ticks >= 20) clearInterval(tickId); // 20 × 500ms = 10s
+  }, 500);
 
   // 页面变化时清空 in-flight
   let lastUrl = location.href;
