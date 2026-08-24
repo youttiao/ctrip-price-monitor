@@ -30,7 +30,7 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VID: ${{ inputs.vendor_id }}
           LABEL: ${{ inputs.label }}
-        CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
+          CTRIP_ADMIN_PASSWORD: ${{ secrets.CTRIP_ADMIN_PASSWORD }}
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
