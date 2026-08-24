@@ -110,6 +110,26 @@ table { border-collapse: collapse; width: 100%; }
 .topnav .right { margin-left: auto; display: flex; gap: var(--sp-3); align-items: center; }
 .topnav .user { color: var(--color-text-muted); font-size: var(--fs-sm); }
 
+.admin-subnav {
+  display: flex;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-5);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.admin-subnav a {
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+}
+.admin-subnav a:hover { color: var(--color-text); }
+.admin-subnav a.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
 /* ----- Layout ----- */
 .page {
   max-width: 1320px;

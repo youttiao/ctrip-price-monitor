@@ -21,6 +21,14 @@
       <a href="/admin/vendors" class="{% if path.startswith('/admin') %}active{% endif %}">管理</a>
     {% endif %}
   </nav>
+  {% if user.role == 'admin' and path.startswith('/admin') %}
+  <div class="admin-subnav">
+    <a href="/admin/vendors" class="{% if path == '/admin/vendors' %}active{% endif %}">Vendors</a>
+    <a href="/admin/api-secret" class="{% if path.startswith('/admin/api-secret') %}active{% endif %}">API Secret</a>
+    <a href="/admin/config" class="{% if path == '/admin/config' %}active{% endif %}">Webhook</a>
+    <a href="/admin/users" class="{% if path == '/admin/users' %}active{% endif %}">用户</a>
+  </div>
+  {% endif %}
   <div class="right">
     <span class="user">{{ user.username }} · {{ user.role }}</span>
     <form method="post" action="/logout" style="margin:0">
