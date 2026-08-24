@@ -101,6 +101,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg?.cmd === "sync_now") {
       await syncCookies();
       sendResponse({ ok: true });
+    } else if (msg?.cmd === "sync_poi") {
+      // popup → 这里 → POST /api/admin/pois/add-via-extension
+      const c = await loadCfg();
+      if (!c.apiSecret) {
+        sendResponse({ ok: false, error: "未配置 apiSecret" });
+        return;
+      }
+      const body = {
+        viewid: msg.poi?.viewid,
+        name: msg.poi?.name || "",
+        pageUrl: msg.pageUrl || "",
+      };
+      try {
+        const r = await fetch(`${c.server}/api/admin/pois/add-via-extension`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Secret": c.apiSecret,
+            "X-Extension-Ver": chrome.runtime.getManifest().version,
+            "X-Source": "extension",
+          },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json().catch(() => ({}));
+        sendResponse({ ok: r.ok && data.ok, status: r.status,
+                       action: data.action, error: data.error });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
     }
   })();
   return true; // async response

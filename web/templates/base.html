@@ -52,6 +52,7 @@
 
   {% if user.role == 'admin' and path.startswith('/admin') %}
   <div class="admin-subnav">
+    <a href="/admin/pois" class="{% if path.startswith('/admin/pois') %}active{% endif %}">POIs</a>
     <a href="/admin/vendors" class="{% if path == '/admin/vendors' %}active{% endif %}">Vendors</a>
     <a href="/admin/api-secret" class="{% if path.startswith('/admin/api-secret') %}active{% endif %}">API Secret</a>
     <a href="/admin/config" class="{% if path == '/admin/config' %}active{% endif %}">Webhook</a>

@@ -34,6 +34,23 @@ async function captureNow() {
   }
 }
 
+async function syncPoi() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) { flash("err", "无活动 tab"); return; }
+  if (!/ctrip\.com/.test(tab.url || "")) { flash("err", "当前 tab 不是携程页面"); return; }
+  // 让 content script 抽 POI，然后 background 转发到 dashboard
+  try {
+    const poi = await chrome.tabs.sendMessage(tab.id, { cmd: "get_poi" });
+    if (!poi || !poi.viewid) { flash("err", "当前页面没有可识别的 POI（URL 中没有 viewId）"); return; }
+    const r = await chrome.runtime.sendMessage({ cmd: "sync_poi", poi, pageUrl: tab.url });
+    flash(r?.ok ? "ok" : "err",
+          r?.ok ? `已同步 ${poi.name || "(未命名)"} (viewId=${poi.viewid}) · ${r.action}`
+                : `同步失败：${r?.error || "未知"}`);
+  } catch (e) {
+    flash("err", "未注入 content script，请先打开携程页面");
+  }
+}
+
 function flash(cls, msg) {
   const el = $("status");
   el.className = "status " + cls;
@@ -47,4 +64,5 @@ document.addEventListener("DOMContentLoaded", () => {
   $("save").addEventListener("click", save);
   $("syncNow").addEventListener("click", syncNow);
   $("captureNow").addEventListener("click", captureNow);
+  $("syncPoi").addEventListener("click", syncPoi);
 });

@@ -79,7 +79,7 @@ def create_app(db_path: str = None) -> FastAPI:
     @app.get("/healthz")
     def healthz():
         return {"ok": True, "ts": datetime.now(timezone.utc).isoformat(),
-                "build_tag": "v2026-08-24T13-admin-capture"}
+                "build_tag": "v2026-08-24T14-poi-discovery"}
 
     return app
 

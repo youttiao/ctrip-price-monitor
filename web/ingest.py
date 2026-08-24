@@ -91,3 +91,59 @@ async def sync_cookies(
     """, (blob, datetime.now(timezone.utc).isoformat()))
     conn.commit()
     return {"ok": True}
+
+
+@router.post("/admin/pois/add-via-extension")
+async def admin_pois_add_via_extension(
+    request: Request,
+    x_api_secret: str | None = Header(default=None, alias="X-API-Secret"),
+):
+    """浏览器扩展 popup「同步当前 POI」调用。
+
+    body: { viewid: int, name?: str, pageUrl?: str }
+    不存在则 INSERT，存在则更新 name 并 enable。
+    """
+    # 延迟导入（路由归属问题：poi_discovery 在 ctrip_core/）
+    from ctrip_core.poi_discovery import extract_viewid_from_url, canonicalize_poi_name  # noqa
+
+    conn = request.app.state.db
+    if not _verify(conn, x_api_secret):
+        return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+
+    viewid = body.get("viewid")
+    if not isinstance(viewid, int):
+        try:
+            viewid = int(str(viewid).strip())
+        except (ValueError, TypeError):
+            return JSONResponse({"ok": False, "error": "missing viewid"}, status_code=400)
+
+    name = canonicalize_poi_name(body.get("name") or "")
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute("SELECT 1 FROM pois WHERE viewid=?", (viewid,)).fetchone()
+    if cur is None:
+        nm = name or f"POI-{viewid}"
+        conn.execute("""
+            INSERT INTO pois (viewid, name, enabled, created_at, updated_at)
+            VALUES (?, ?, 1, ?, ?)
+        """, (viewid, nm, now, now))
+        action = "inserted"
+    else:
+        if name:
+            conn.execute("""
+                UPDATE pois SET name=?, enabled=1, updated_at=?
+                WHERE viewid=?
+            """, (name, now, viewid))
+            action = "name_updated"
+        else:
+            conn.execute("""
+                UPDATE pois SET enabled=1, updated_at=? WHERE viewid=?
+            """, (now, viewid))
+            action = "enabled"
+    conn.commit()
+    return JSONResponse({"ok": True, "viewid": viewid, "action": action,
+                         "name": name or None})

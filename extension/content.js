@@ -158,6 +158,12 @@
       captureAndUpload().then(sendResponse);
       return true;
     }
+    if (msg?.cmd === "get_poi") {
+      // 优先用当前已经检测到的 POI；否则现算一次
+      const poi = currentPOI || detectPOIFromURL();
+      sendResponse(poi || null);
+      return false;
+    }
   });
 
   // 初始化

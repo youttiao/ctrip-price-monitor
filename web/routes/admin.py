@@ -1,5 +1,5 @@
-"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理 + ops。
-build-tag: 2026-08-24T13
+"""Admin 路由：vendor list + watchlist toggle + config + API secret 管理 + ops + POI 管理。
+build-tag: 2026-08-24T14
 """
 from __future__ import annotations
 import json as _json
@@ -10,10 +10,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Cookie, Form, HTTPException, Request
+from fastapi import APIRouter, Cookie, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import auth
+from ctrip_core import poi_discovery
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -273,3 +274,88 @@ def admin_api_secret_rotate(request: Request):
     """, (_json.dumps(new_secret), now))
     conn.commit()
     return RedirectResponse("/admin/api-secret?rotated=1", status_code=303)
+
+
+# ── POI 管理 ─────────────────────────────────────────────
+
+def _poi_list_rows(conn) -> list:
+    """拉所有 POI（含每条最后捕获时间和状态）。"""
+    return conn.execute("""
+        SELECT p.viewid, p.name, p.enabled, p.district,
+               p.last_round_id, p.last_status, p.last_error,
+               p.created_at, p.updated_at,
+               (SELECT MAX(received_at) FROM rounds r WHERE r.poi_viewid = p.viewid) AS last_captured,
+               (SELECT sku_count FROM rounds r
+                  WHERE r.poi_viewid = p.viewid
+                  ORDER BY received_at DESC LIMIT 1) AS last_sku_count
+        FROM pois p
+        ORDER BY p.enabled DESC, last_captured DESC NULLS LAST, p.viewid
+    """).fetchall()
+
+
+@router.get("/pois", response_class=HTMLResponse)
+def admin_pois(request: Request, error: str | None = None):
+    user = _require_admin(request)
+    conn = request.app.state.db
+    pois = _poi_list_rows(conn)
+    add_error = request.query_params.get("error")
+    return request.app.state.tmpl.TemplateResponse(
+        request, "admin_pois.html",
+        {"user": user, "pois": pois, "add_error": add_error}
+    )
+
+
+@router.post("/pois/add")
+def admin_pois_add(request: Request,
+                   ctrip_url: str = Form(...),
+                   name: str = Form("")):
+    """从 URL 抽 viewId，写入 pois 表。
+
+    name 可选：留空则记为 "(未命名)"，等下次抓到 round 时被真实名替换。
+    """
+    user = _require_admin(request)
+    conn = request.app.state.db
+    viewid = poi_discovery.extract_viewid_from_url(ctrip_url)
+    if not viewid:
+        return RedirectResponse(
+            "/admin/pois?error=" + "URL 里找不到 viewId（试试含 viewId= 或 /sight/N.html 的链接）",
+            status_code=303,
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    nm = poi_discovery.canonicalize_poi_name(name) or f"POI-{viewid}"
+    conn.execute("""
+        INSERT INTO pois (viewid, name, enabled, created_at, updated_at)
+        VALUES (?, ?, 1, ?, ?)
+        ON CONFLICT(viewid) DO UPDATE SET
+            name=COALESCE(NULLIF(?, ''), pois.name),
+            enabled=1,
+            updated_at=?
+    """, (viewid, nm, now, now, nm, now))
+    conn.commit()
+    return RedirectResponse("/admin/pois", status_code=303)
+
+
+@router.post("/pois/{viewid}/toggle")
+def admin_pois_toggle(request: Request, viewid: int):
+    user = _require_admin(request)
+    conn = request.app.state.db
+    conn.execute("""
+        UPDATE pois SET enabled = 1 - enabled, updated_at=?
+        WHERE viewid=?
+    """, (datetime.now(timezone.utc).isoformat(), viewid))
+    conn.commit()
+    return RedirectResponse("/admin/pois", status_code=303)
+
+
+@router.post("/pois/{viewid}/delete")
+def admin_pois_delete(request: Request, viewid: int):
+    user = _require_admin(request)
+    conn = request.app.state.db
+    conn.execute("DELETE FROM pois WHERE viewid=?", (viewid,))
+    conn.commit()
+    return RedirectResponse("/admin/pois", status_code=303)
+
+
+# 注意：/api/admin/pois/add-via-extension 不在本 router；
+# 该 endpoint 在 web/ingest.py（prefix=/api），用 X-API-Secret 认证，
+# 供浏览器扩展 popup「同步当前 POI」调用。

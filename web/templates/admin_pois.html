@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}POIs · 携程哨兵{% endblock %}
+{% block body %}
+
+<div class="page">
+
+  <div class="eyebrow">管理 · POIs</div>
+  <div class="page-header">
+    <div>
+      <h1>景点 POI</h1>
+      <div class="sub">监控哪些景区的货架 · 自动加 POI = 浏览器扩展"同步当前页"或粘贴 H5 URL</div>
+    </div>
+    <a href="/admin/vendors" class="btn ghost sm">Vendors →</a>
+  </div>
+
+  <div class="card mb-4">
+    <h3 class="card-title">加入监控</h3>
+    <form method="post" action="/admin/pois/add" class="flex gap-3">
+      <input type="text" name="ctrip_url"
+             placeholder="Ctrip H5 URL（含 viewId 或 /sight/N.html / /poi/N.html）"
+             style="flex:3; padding:var(--sp-2) var(--sp-3); background:var(--paper); border:1px solid var(--rule); border-radius:2px; font-family:var(--font-mono); font-size:var(--fs-sm)"
+             required>
+      <input type="text" name="name"
+             placeholder="POI 名称（可选，会覆盖自动抽取的）"
+             style="flex:2; padding:var(--sp-2) var(--sp-3); background:var(--paper); border:1px solid var(--rule); border-radius:2px; font-family:var(--font-body); font-size:var(--fs-sm)">
+      <button class="btn primary" type="submit">加入</button>
+    </form>
+    <div class="mono muted" style="font-size:var(--fs-xs); margin-top:var(--sp-3); line-height:1.7">
+      示例：
+      <code>https://m.ctrip.com/webapp/sight/233.html</code> ·
+      <code>https://m.ctrip.com/restapi/soa2/14509/json/GetSightOverview?viewId=231</code>
+      <br>
+      浏览器扩展同步：当前打开的是携程 POI 页面时，点 popup 里的"同步当前 POI"。
+    </div>
+    {% if add_error %}
+    <div class="card mt-3" style="background:var(--crimson-soft); border-color:var(--crimson); color:var(--crimson); padding:var(--sp-3); font-size:var(--fs-sm)">
+      {{ add_error }}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">已加入（{{ pois|length }}）</h3>
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th>viewId</th>
+            <th>名称</th>
+            <th>启用</th>
+            <th>最近捕获</th>
+            <th class="num">SKU</th>
+            <th class="num">状态</th>
+            <th class="num">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pois %}
+          <tr class="{% if p.enabled %}is-mine{% endif %}">
+            <td class="mono">{{ p.viewid }}</td>
+            <td>{{ p.name }}</td>
+            <td>
+              {% if p.enabled %}<span style="color:var(--moss)">● 启用</span>
+              {% else %}<span class="muted">○ 停用</span>{% endif %}
+            </td>
+            <td class="muted mono" style="font-size:var(--fs-xs)">
+              {{ p.last_captured[:16] if p.last_captured else '—' }}
+            </td>
+            <td class="num muted">{{ p.last_sku_count if p.last_sku_count is not none else '—' }}</td>
+            <td class="num">
+              {% if p.last_status == 'parsed' %}<span style="color:var(--moss)">OK</span>
+              {% elif p.last_status == 'pending' %}<span class="muted">…</span>
+              {% elif p.last_status == 'failed' %}<span style="color:var(--crimson)">失败</span>
+              {% else %}<span class="muted">—</span>{% endif %}
+            </td>
+            <td class="num">
+              <form method="post" action="/admin/pois/{{ p.viewid }}/toggle" style="display:inline">
+                <button class="btn sm" type="submit">{% if p.enabled %}停用{% else %}启用{% endif %}</button>
+              </form>
+              <form method="post" action="/admin/pois/{{ p.viewid }}/delete" style="display:inline"
+                    onsubmit="return confirm('确认删除？')">
+                <button class="btn sm danger" type="submit">删</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7"><div class="empty" style="border:none">还没有 POI · 同步一个或粘贴 URL</div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
