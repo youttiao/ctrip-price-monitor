@@ -12,7 +12,8 @@ on:
       label:
         description: '可选 label'
         required: false
-        default: ''
+        type: string
+        default: ' '
 
 jobs:
   add:
