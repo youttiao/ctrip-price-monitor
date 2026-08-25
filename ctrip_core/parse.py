@@ -211,7 +211,8 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
             "resource_id": rid,
             "level1_sale_unit_id": r.get("level1SaleUnitId"),
             "product_ids": r.get("productIds") or [],
-            "full_name": r.get("fullName"),
+            # 兼容新旧字段：历史 raw 用 fullName，2026-08 起新 raw 用 name（API 调整）
+            "full_name": r.get("fullName") or r.get("name"),
             "spotid": r.get("spotid"),
             "display_price": r.get("displayPrice"),
             "market_price": ((r.get("marketPriceInfo") or {}).get("price")),
