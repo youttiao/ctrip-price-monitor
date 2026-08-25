@@ -70,6 +70,88 @@ async def ingest_round(
     return {"ok": True, "round_id": round_id, "round_pk": cur.lastrowid}
 
 
+@router.get("/extension/commands")
+async def extension_get_commands(
+    request: Request,
+    x_api_secret: str | None = Header(default=None, alias="X-API-Secret"),
+    x_extension_ver: str | None = Header(default=None, alias="X-Extension-Ver"),
+):
+    """扩展侧轮询：取未消费的 capture_now 指令 + 更新心跳。
+
+    鉴权同其它 /api/*：X-API-Secret 必须匹配 config.api_secret。
+    心跳写 extension_heartbeat(id=1)，用于前端"扩展是否活跃"显示。
+    """
+    conn = request.app.state.db
+    if not _verify(conn, x_api_secret):
+        return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute("""
+        SELECT id, cmd, args_json, created_at, poll_after_at
+        FROM extension_commands
+        WHERE consumed_at IS NULL
+          AND (poll_after_at IS NULL OR poll_after_at <= ?)
+        ORDER BY id ASC
+        LIMIT 20
+    """, (now,)).fetchall()
+
+    cmds = [{
+        "id": r["id"],
+        "cmd": r["cmd"],
+        "args": json.loads(r["args_json"]) if r["args_json"] else {},
+        "created_at": r["created_at"],
+        "poll_after_at": r["poll_after_at"],
+    } for r in rows]
+
+    # 心跳（单行覆盖写）
+    conn.execute("""
+        INSERT INTO extension_heartbeat (id, last_polled_at, last_version, last_commands_returned)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          last_polled_at=excluded.last_polled_at,
+          last_version=COALESCE(excluded.last_version, extension_heartbeat.last_version),
+          last_commands_returned=excluded.last_commands_returned
+    """, (now, x_extension_ver or "", len(cmds)))
+    conn.commit()
+
+    return {"ok": True, "commands": cmds, "ts": now}
+
+
+@router.post("/extension/commands/{cmd_id}/ack")
+async def extension_ack_command(
+    request: Request,
+    cmd_id: int,
+    x_api_secret: str | None = Header(default=None, alias="X-API-Secret"),
+):
+    """扩展消费完一条指令后回写。
+
+    Body: {"result":"triggered"|"no_tab"|"error","error":"..."}
+    """
+    conn = request.app.state.db
+    if not _verify(conn, x_api_secret):
+        return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    result = body.get("result") or "triggered"
+    error = body.get("error") or ""
+    note = f"{result}:{error}"[:200]
+
+    cur = conn.execute("""
+        UPDATE extension_commands
+        SET consumed_at=?, consumed_by='extension', note=?
+        WHERE id=? AND consumed_at IS NULL
+    """, (now, note, cmd_id))
+    conn.commit()
+    if cur.rowcount == 0:
+        return JSONResponse({"ok": False, "error": "not_found_or_already_consumed"}, status_code=404)
+    return {"ok": True, "id": cmd_id}
+
+
 @router.post("/cookies/sync")
 async def sync_cookies(
     request: Request,

@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Server-side scraper：用最新 cookies 调 search + addInfo + priceCalendar。
+"""Server-side scraper [DEPRECATED 2026-08-25]：用最新 cookies 调 search + addInfo + priceCalendar。
 
-30 分钟一轮。每轮：
-    1. 读 cookies 表最新一条
-    2. 对每个 enabled POI：
-       - search（distributorSearchObj）→ 拿 resources + poiId
-       - 对每个 resource 调 resourceAddInfo 拿 vendor
-       - 对每个 resource 调 getProductPriceCalendar 拿每日/票种价格（如果能拿到 poiId）
-       - POST 到本地 ingest endpoint（带 X-Ingest-Secret）
+⚠️ DEPRECATED：Ctrip 反爬 (crawlerKey + fingerprintKeys + forcedLogin) 把裸 httpx
+的 addInfo / priceCalendar / getProductShelf 全部挡成空数据。已实测见
+`data/raw_rounds/2026-08-25T02-36*/...json`：39 requests 全空、零 SKU。
+
+替代方案：完整 loop 走扩展 → 服务器。下发 capture_now 到 extension_commands，
+扩展 background.js 30 秒轮询、派发到 m.ctrip tab 触发 content.js 抓取。
+原 systemd timer (`ctrip-scraper.timer`) 已停跑；本文件保留备用，
+配合 headless Chrome 反爬绕过实验时仍可调。
+
+历史行为：
+    30 分钟一轮。每轮：
+        1. 读 cookies 表最新一条
+        2. 对每个 enabled POI：
+           - search（distributorSearchObj）→ 拿 resources + poiId
+           - 对每个 resource 调 resourceAddInfo 拿 vendor
+           - 对每个 resource 调 getProductPriceCalendar 拿每日/票种价格（如果能拿到 poiId）
+           - POST 到本地 ingest endpoint（带 X-Ingest-Secret）
 
 注意事项：
     - 只调 search + addInfo + priceCalendar，不调 getProductShelf（后者要 w-payload-source header）

@@ -87,18 +87,51 @@ function renderPoi(tab, poi) {
       <button id="syncPoiBtn">写入 dashboard</button>
     </div>`;
 
+  // chrome.tabs.sendMessage 的失败模式细分:
+  //   1) chrome.runtime.lastError  "Could not establish connection" → 真的没注入
+  //   2) reject "The message port closed before a response was received." →
+  //      reload race(我们已不再 reload,所以这种只剩"用户刚 reload 页面 / 切到别的 tab")
+  //   3) reject 其他 → 网络/异常,显示 message
+  function describeSendError(e) {
+    const msg = (e && e.message) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || "未知错误";
+    if (/Could not establish connection/i.test(msg)) {
+      return "未注入 content script（请刷新一次页面）";
+    }
+    if (/message port closed/i.test(msg)) {
+      return "页面正在刷新或刚切走 — 等加载完再点「再抓一轮」";
+    }
+    return `页面没响应：${msg}`;
+  }
+  function describeCaptureResult(r) {
+    if (r && r.ok) {
+      return { kind: "ok", html: `已上传 · HTTP ${r.status} · <span class="count">${r.requests ?? 0}</span> 条请求` };
+    }
+    if (r && r.reason === "no_poi_in_url") {
+      return { kind: "err", html: "URL 里没有 viewId" };
+    }
+    if (r && r.reason === "no_requests") {
+      return { kind: "err", html: "这次没拦截到 soa2 请求（页面刚打开？）— 点「再抓一轮」" };
+    }
+    if (r && r.status === 401) {
+      return { kind: "err", html: "上传 401 auth 失败 — 检查 popup 里 API Secret 是否与 /admin/api-secret 一致" };
+    }
+    if (r && (r.status >= 500 || r.status === 0)) {
+      return { kind: "err", html: `上传失败 HTTP ${r.status} — 服务端异常,稍后重试` };
+    }
+    const detail = r && (r.error || r.reason);
+    return { kind: "err", html: `失败：${detail || "未知"}` };
+  }
+
   $("captureBtn").addEventListener("click", async () => {
     $("captureBtn").disabled = true;
     setPoiStatus("run", "抓取中…（等待 1.5s）");
     try {
       const r = await chrome.tabs.sendMessage(tab.id, { cmd: "capture_now" });
-      if (r?.ok) {
-        setPoiStatus("ok", `已上传 · HTTP ${r.status} · <span class="count">${r.requests ?? 0}</span> 条请求`);
-      } else {
-        setPoiStatus("err", `失败：${r?.error || "未注入 content script"}`);
-      }
+      if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
+      const d = describeCaptureResult(r);
+      setPoiStatus(d.kind, d.html);
     } catch (e) {
-      setPoiStatus("err", "未注入 content script（请刷新页面）");
+      setPoiStatus("err", describeSendError(e));
     } finally {
       $("captureBtn").disabled = false;
     }
@@ -109,6 +142,7 @@ function renderPoi(tab, poi) {
     setPoiStatus("run", "写入 dashboard…");
     try {
       const cur = await chrome.tabs.sendMessage(tab.id, { cmd: "get_poi" });
+      if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
       if (!cur || !cur.viewid) { setPoiStatus("err", "页面里没有可识别的 POI"); return; }
       const r = await chrome.runtime.sendMessage({ cmd: "sync_poi", poi: cur, pageUrl: tab.url });
       if (r?.ok) {
@@ -117,7 +151,7 @@ function renderPoi(tab, poi) {
         setPoiStatus("err", `失败：${r?.error || "未知"}`);
       }
     } catch (e) {
-      setPoiStatus("err", "未注入 content script");
+      setPoiStatus("err", describeSendError(e));
     } finally {
       $("syncPoiBtn").disabled = false;
     }

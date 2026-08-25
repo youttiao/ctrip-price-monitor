@@ -1,5 +1,8 @@
 [Unit]
-Description=Ctrip Server Scraper Timer (every 30 min)
+# DEPRECATED 2026-08-25 — 详见 server_scraper.py 头部
+# 服务端裸 httpx 被反爬挡住，所有 round 都 empty。改走扩展 bridge 循环。
+# 保留 unit 文件，但 Enabled=false（已禁）。需要再启时手动 systemctl enable --now。
+Description=Ctrip Server Scraper Timer (DEPRECATED — keeps Enabled=false)
 
 [Timer]
 OnBootSec=5min

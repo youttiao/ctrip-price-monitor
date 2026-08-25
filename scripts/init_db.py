@@ -170,6 +170,29 @@ CREATE TABLE IF NOT EXISTS cookies (
     uploaded_by     TEXT
 );
 
+-- 服务器→扩展的命令队列；扩展每 30s 轮询 /api/extension/commands 拉取。
+-- consumed_at IS NULL 即未消费；web 端写、extension 端 ack 时填充。
+CREATE TABLE IF NOT EXISTS extension_commands (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    cmd             TEXT NOT NULL,                -- 'capture_now'
+    args_json       TEXT,                         -- JSON dict, e.g. {"viewid":233}
+    created_at      TEXT NOT NULL,
+    poll_after_at   TEXT,                         -- 最早允许拉取时间, NULL/<=now 立即可拉
+    consumed_at     TEXT,
+    consumed_by     TEXT,                         -- 'extension'
+    note            TEXT                          -- ack 时扩展回传: "triggered:..." | "no_tab:..." | "error:..."
+);
+CREATE INDEX IF NOT EXISTS idx_extension_commands_unconsumed
+    ON extension_commands(poll_after_at) WHERE consumed_at IS NULL;
+
+-- 扩展心跳单行表(id=1)。每次 GET /api/extension/commands 覆盖写。
+-- 用于 admin 报头"扩展最近活跃 N 分钟前"显示。
+CREATE TABLE IF NOT EXISTS extension_heartbeat (
+    id                      INTEGER PRIMARY KEY CHECK(id=1),
+    last_polled_at          TEXT,
+    last_version            TEXT,                       -- chrome.runtime.getManifest().version
+    last_commands_returned  INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS users (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     username        TEXT UNIQUE NOT NULL,
