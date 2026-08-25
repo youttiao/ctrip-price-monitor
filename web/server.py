@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Cookie, Depends, Form, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,6 +38,33 @@ def create_app(db_path: str = None) -> FastAPI:
     # 单 connection（在 1-process 中够用；生产用 uvicorn --workers 2 时考虑连接池）
     app.state.db = db.get_connection(db_path)
 
+    # 幂等建表：扩展命令队列 + 心跳单行表。新部署无需重跑 init_db。
+    app.state.db.execute("""
+        CREATE TABLE IF NOT EXISTS extension_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cmd TEXT NOT NULL,
+            args_json TEXT,
+            created_at TEXT NOT NULL,
+            poll_after_at TEXT,
+            consumed_at TEXT,
+            consumed_by TEXT,
+            note TEXT
+        )
+    """)
+    app.state.db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_extension_commands_unconsumed
+            ON extension_commands(poll_after_at) WHERE consumed_at IS NULL
+    """)
+    app.state.db.execute("""
+        CREATE TABLE IF NOT EXISTS extension_heartbeat (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            last_polled_at TEXT,
+            last_version TEXT,
+            last_commands_returned INTEGER DEFAULT 0
+        )
+    """)
+    app.state.db.commit()
+
     # 静态 + 路由
     static_dir = Path(__file__).parent / "static"
     tmpl_dir = Path(__file__).parent / "templates"
@@ -59,7 +87,7 @@ def create_app(db_path: str = None) -> FastAPI:
             return None
 
     def heartbeat(db_conn):
-        """报头心跳：上次捕获 + 距今分钟数 + pulse + cookie 上次同步时间。"""
+        """报头心跳：上次捕获 + 距今分钟数 + pulse + cookie 上次同步时间 + 扩展心跳 + 命令队列。"""
         try:
             row = db_conn.execute(
                 "SELECT MAX(received_at) AS last FROM rounds WHERE status='parsed'"
@@ -76,6 +104,28 @@ def create_app(db_path: str = None) -> FastAPI:
             last_cookie = row["last"] if row else None
         except Exception:
             last_cookie = None
+        # 扩展心跳
+        try:
+            row = db_conn.execute(
+                "SELECT last_polled_at, last_version, last_commands_returned FROM extension_heartbeat WHERE id=1"
+            ).fetchone()
+            ext_last = row["last_polled_at"] if row else None
+            ext_version = row["last_version"] if row else None
+        except Exception:
+            ext_last, ext_version = None, None
+        # 命令队列（最近 1 小时）
+        try:
+            qrow = db_conn.execute("""
+                SELECT
+                  SUM(CASE WHEN consumed_at IS NULL THEN 1 ELSE 0 END) AS pending,
+                  SUM(CASE WHEN consumed_at IS NOT NULL THEN 1 ELSE 0 END) AS consumed
+                FROM extension_commands WHERE created_at > datetime('now', '-1 hour')
+            """).fetchone()
+            pending = (qrow["pending"] or 0) if qrow else 0
+            consumed = (qrow["consumed"] or 0) if qrow else 0
+        except Exception:
+            pending, consumed = 0, 0
+
         last_min = _minutes_since(last)
         if last_min is None:
             pulse = "ok"
@@ -88,7 +138,11 @@ def create_app(db_path: str = None) -> FastAPI:
         return {"last_at": last, "last_minutes_ago": last_min,
                 "pulse": pulse, "round_count": cnt,
                 "last_cookie_at": last_cookie,
-                "last_cookie_minutes_ago": _minutes_since(last_cookie)}
+                "last_cookie_minutes_ago": _minutes_since(last_cookie),
+                "extension_last_polled_at": ext_last,
+                "extension_last_polled_minutes_ago": _minutes_since(ext_last),
+                "extension_version": ext_version,
+                "queue_pending": pending, "queue_consumed_1h": consumed}
 
     templates.env.globals["heartbeat"] = heartbeat
     app.state.tmpl = templates
@@ -100,6 +154,18 @@ def create_app(db_path: str = None) -> FastAPI:
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return resp
+
+    # CORS：让浏览器扩展的 MAIN world（页面 origin = m.ctrip.com）也能
+    # 直接 fetch 到 /api/ingest/round。Server 端仍以 X-API-Secret 鉴权，
+    # 所以开放 `*` 只暴露端点存在，不暴露写入权限。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=3600,
+    )
 
     # 路由
     app.include_router(ingest_router)

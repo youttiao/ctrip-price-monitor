@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>单页水墨报 · POI 详情 · 携程哨兵</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;600&family=ZCOOL+XiaoWei&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EFE8D5;     /* 旧纸 · 主背景 */
+    --paper-2:#E6DDC3;   /* 边纸色 */
+    --card:#F5EFDD;      /* 卡纸 · 比 paper 浅一档 */
+    --card-2:#DCD2B5;    /* 嵌套表 */
+    --ink:#1A1814;       /* 浓墨 */
+    --ink-2:#3F3A30;     /* 次墨 */
+    --ink-3:#7A6F58;     /* 灰墨 */
+    --rule:#BFB294;      /* 纸纹分隔 */
+    --rule-strong:#8E7E58;
+    --seal:#B83A14;      /* 印章红 */
+    --seal-deep:#8C2A0B; /* 印泥深红 */
+    --seal-soft:#EAC9B6;
+    --navy:#1E3A5F;
+    --navy-soft:#C9D2DF;
+    --moss:#3F5A33;      /* 深苔绿 · 用作"我的"基准 */
+    --moss-soft:#C9D6BC;
+    --amber:#A05F0C;
+    --amber-soft:#E8D2A4;
+    --crimson:#8E1A1A;
+    --crimson-soft:#E5C0C0;
+    --sumi:#2D2418;      /* 墨色 */
+
+    --heat-low:#C9D6BC;  /* 热力 - 这票种最便宜 */
+    --heat-mid:#E8D2A4;  /* 热力 - 中位 */
+    --heat-high:#E5C0C0; /* 热力 - 高位 */
+
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:36px; --sp-7:56px;
+    --fs-xs:12px; --fs-sm:13px; --fs-md:15px; --fs-lg:18px; --fs-xl:24px; --fs-2xl:32px;
+    --font-display:"Noto Serif SC","Songti SC","SimSun","STSong",serif;
+    --font-body:"Noto Sans SC","Inter",-apple-system,sans-serif;
+    --font-mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --font-hand:"ZCOOL XiaoWei","Noto Serif SC",serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    color:var(--ink);
+    font-family:var(--font-body); font-size:var(--fs-md);
+    background:
+      radial-gradient(ellipse 100% 60% at 50% 0%, rgba(255,250,235,.6), transparent 70%),
+      repeating-linear-gradient(0deg, transparent 0 3px, rgba(120,100,60,.012) 3px 4px),
+      repeating-linear-gradient(90deg, transparent 0 3px, rgba(120,100,60,.012) 3px 4px),
+      var(--paper);
+    min-height:100vh;
+    padding:var(--sp-5);
+  }
+  /* 报头印章章 */
+  .chop{
+    display:inline-block;
+    width:48px; height:48px;
+    border:2px solid var(--seal);
+    color:var(--seal);
+    font-family:var(--font-display); font-weight:900;
+    font-size:24px;
+    line-height:44px; text-align:center;
+    transform:rotate(-3deg);
+    box-shadow:inset 0 0 0 1px var(--seal);
+    letter-spacing:0;
+    position:relative;
+  }
+  .chop::after{
+    content:""; position:absolute; inset:4px;
+    border:1px dashed var(--seal-soft); pointer-events:none;
+  }
+
+  .page{
+    max-width:1280px; margin:0 auto;
+    display:grid;
+    grid-template-columns: 1fr 320px;
+    gap:var(--sp-5);
+  }
+  /* 主区 */
+  .main{min-width:0}
+  /* 边注栏 */
+  .aside{
+    background:var(--paper-2);
+    border:1px solid var(--rule);
+    padding:var(--sp-5);
+    position:relative;
+  }
+  .aside::before{
+    content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
+    background:repeating-linear-gradient(180deg, var(--ink) 0 8px, transparent 8px 14px);
+    opacity:.18;
+  }
+
+  /* ── 报头 ── */
+  .masthead{
+    display:flex; justify-content:space-between; align-items:flex-start;
+    border-bottom:3px double var(--ink);
+    padding-bottom:var(--sp-3);
+    margin-bottom:var(--sp-5);
+    position:relative;
+  }
+  .masthead .left{display:flex; gap:var(--sp-4); align-items:flex-start}
+  .masthead h1{
+    font-family:var(--font-display); font-weight:900;
+    font-size:var(--fs-2xl); margin:0;
+    letter-spacing:.06em;
+    line-height:1.1;
+  }
+  .masthead .meta{
+    font-family:var(--font-mono); font-size:var(--fs-xs);
+    color:var(--ink-3); margin-top:var(--sp-1);
+    letter-spacing:.04em;
+  }
+  .masthead .meta b{color:var(--ink-2); font-weight:600}
+
+  /* ── 哨兵日报三栏 ── */
+  .daily{
+    display:grid; grid-template-columns:1fr 1fr 1fr;
+    gap:0; margin-bottom:var(--sp-5);
+    border:1px solid var(--ink);
+    background:var(--card);
+  }
+  .daily .col{
+    padding:var(--sp-3) var(--sp-4);
+    border-right:1px solid var(--rule);
+    position:relative;
+  }
+  .daily .col:last-child{border-right:none}
+  .daily .col .ttl{
+    font-family:var(--font-display); font-weight:700;
+    font-size:var(--fs-sm); color:var(--ink-2);
+    letter-spacing:.08em;
+    display:flex; align-items:center; gap:var(--sp-2);
+  }
+  .daily .col .ttl .badge{
+    display:inline-block; width:10px; height:10px;
+    border-radius:50%;
+  }
+  .daily .col.mine .ttl .badge{background:var(--moss)}
+  .daily .col.them .ttl .badge{background:var(--seal)}
+  .daily .col.only .ttl .badge{
+    background:repeating-linear-gradient(45deg, var(--ink-3) 0 2px, transparent 2px 4px);
+    border-radius:0;
+  }
+  .daily .col .row{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-top:var(--sp-2);
+  }
+  .daily .col .row .num{
+    font-family:var(--font-mono); font-weight:600;
+    font-size:var(--fs-2xl); line-height:1;
+  }
+  .daily .col.mine .row .num{color:var(--moss)}
+  .daily .col.them .row .num{color:var(--seal)}
+  .daily .col.only .row .num{color:var(--ink-2)}
+  .daily .col .row .den{font-family:var(--font-mono); color:var(--ink-3); font-size:var(--fs-sm)}
+  .daily .col .spark{margin-top:var(--sp-2); height:24px}
+  .daily .col.mine .bar{fill:var(--moss)}
+  .daily .col.them .bar{fill:var(--seal)}
+  .daily .col.only .bar{fill:var(--ink-3)}
+  .daily .col .trend{font-family:var(--font-mono); font-size:var(--fs-xs); color:var(--ink-3); margin-top:2px}
+
+  /* ── 节标题 ── */
+  .section-title{
+    font-family:var(--font-display); font-weight:700;
+    font-size:var(--fs-lg); letter-spacing:.06em;
+    display:flex; align-items:baseline; gap:var(--sp-3);
+    margin:0 0 var(--sp-3);
+  }
+  .section-title .num{
+    font-family:var(--font-mono); font-weight:500;
+    font-size:var(--fs-sm); color:var(--ink-3);
+  }
+  .section-title .quote{
+    font-family:var(--font-hand); font-style:normal;
+    font-size:var(--fs-sm); color:var(--ink-3);
+    margin-left:auto;
+  }
+
+  /* ── 印章矩阵主区 ── */
+  .calendar{
+    background:var(--card);
+    border:1px solid var(--rule);
+    padding:var(--sp-4);
+    overflow-x:auto;
+    position:relative;
+  }
+  .calendar::before{
+    content:""; position:absolute; left:50%; top:var(--sp-2); bottom:var(--sp-2);
+    width:1px; background:repeating-linear-gradient(180deg, var(--ink-3) 0 4px, transparent 4px 8px);
+    opacity:.15;
+  }
+  table.cal{
+    border-collapse:separate; border-spacing:6px;
+    width:100%; min-width:780px;
+  }
+  table.cal th{
+    text-align:center; vertical-align:bottom;
+    padding:var(--sp-2) 0 var(--sp-3);
+    font-family:var(--font-display); font-weight:500;
+    font-size:var(--fs-xs); color:var(--ink-3);
+    letter-spacing:.06em;
+    border-bottom:1px solid var(--rule);
+    position:relative;
+  }
+  table.cal th .num{
+    font-family:var(--font-display); font-weight:700;
+    font-size:var(--fs-lg); color:var(--ink); display:block;
+    line-height:1;
+  }
+  table.cal th.today .num{color:var(--seal)}
+  table.cal th.today::after{
+    content:""; position:absolute; left:50%; bottom:-1px;
+    width:24px; height:3px; background:var(--seal); transform:translateX(-50%);
+  }
+  table.cal th .dow{
+    font-family:var(--font-display); font-weight:400;
+    font-size:var(--fs-xs); margin-top:2px; display:block;
+    color:var(--ink-3);
+  }
+  table.cal th.weekend .num{color:var(--seal)}
+  table.cal th.weekend .dow{color:var(--seal)}
+
+  table.cal .sku-name{
+    text-align:left; padding:var(--sp-3) var(--sp-3);
+    font-family:var(--font-display); font-weight:700;
+    font-size:var(--fs-md); letter-spacing:.04em;
+  }
+  table.cal .sku-meta{
+    text-align:left; padding:0 var(--sp-3) var(--sp-3);
+    font-size:var(--fs-xs); color:var(--ink-3);
+    font-family:var(--font-mono);
+    line-height:1.4;
+  }
+  table.cal .sku-meta .my-tag{
+    display:inline-block; padding:1px 6px;
+    background:var(--moss-soft); color:var(--moss);
+    font-family:var(--font-display); font-weight:700;
+    margin-left:4px;
+  }
+  table.cal .avg, table.cal .mine-count{
+    text-align:center; padding:var(--sp-2);
+    vertical-align:middle;
+  }
+  table.cal .avg .lbl, table.cal .mine-count .lbl{
+    font-family:var(--font-display); font-weight:500;
+    font-size:var(--fs-xs); color:var(--ink-3); letter-spacing:.06em;
+    display:block; margin-bottom:var(--sp-1);
+  }
+  table.cal .avg .big{
+    font-family:var(--font-mono); font-weight:600;
+    font-size:var(--fs-xl); color:var(--ink); display:block;
+    line-height:1;
+  }
+  table.cal .mine-count .big{
+    font-family:var(--font-mono); font-weight:600;
+    font-size:var(--fs-xl); display:block;
+    line-height:1;
+  }
+  table.cal .mine-count .big.mine-good{color:var(--moss)}
+  table.cal .mine-count .big.mine-bad{color:var(--seal)}
+
+  /* ── 日期章 ── 真正的印章 ── */
+  .seal-cell{
+    position:relative; cursor:pointer;
+    width:64px; height:64px;
+    border-radius:2px; padding:0;
+    background:var(--heat-mid);
+    /* 双线边 */
+    outline:1.5px solid var(--ink);
+    outline-offset:0;
+    box-shadow:
+      inset 0 0 0 1px var(--paper),
+      inset 0 0 0 3px transparent,
+      1px 2px 0 rgba(26,24,20,.12);
+    transition:transform .14s ease;
+    /* 默认随机倾斜（每格不同） */
+    transform:rotate(-0.6deg);
+  }
+  /* 印章在不同位置的随机倾斜 */
+  table.cal tbody tr:nth-child(odd) td:nth-child(even) .seal-cell{transform:rotate(0.5deg)}
+  table.cal tbody tr:nth-child(even) td:nth-child(odd) .seal-cell{transform:rotate(0.8deg)}
+  table.cal tbody tr:nth-child(3n) td:nth-child(odd) .seal-cell{transform:rotate(-0.9deg)}
+  table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell{transform:rotate(-0.4deg)}
+  .seal-cell:hover{
+    transform:rotate(0) translateY(-2px);
+    box-shadow:
+      inset 0 0 0 1px var(--paper),
+      inset 0 0 0 3px var(--seal),
+      2px 4px 0 rgba(26,24,20,.18);
+  }
+  /* 印章内容 */
+  .seal-cell .price{
+    font-family:var(--font-display); font-weight:900;
+    font-size:var(--fs-lg); color:var(--sumi);
+    line-height:1; margin-top:9px;
+    letter-spacing:.02em;
+  }
+  .seal-cell .vendor{
+    font-family:var(--font-display); font-weight:700;
+    font-size:11px; color:var(--ink-2);
+    margin-top:3px; letter-spacing:.04em;
+  }
+  /* 三态配色 */
+  .seal-cell.mine{
+    background:var(--moss-soft);
+    outline-color:var(--moss);
+  }
+  .seal-cell.mine .vendor{color:var(--moss)}
+  .seal-cell.mine .price{color:var(--moss)}
+  .seal-cell.them{
+    background:var(--seal-soft);
+    outline-color:var(--seal);
+  }
+  .seal-cell.them .vendor{color:var(--seal-deep)}
+  .seal-cell.them .price{color:var(--seal-deep)}
+  .seal-cell.only{
+    background:repeating-linear-gradient(135deg, var(--card) 0 8px, var(--paper-2) 8px 14px);
+    outline:1.5px dashed var(--rule-strong);
+  }
+  .seal-cell.only .vendor{color:var(--ink-3)}
+  .seal-cell.only .price{color:var(--ink-2)}
+  /* 库存=0 */
+  .seal-cell.sold-out{
+    background:var(--card-2); outline-color:var(--ink-3);
+    opacity:.6;
+  }
+  .seal-cell.sold-out .price{text-decoration:line-through; color:var(--ink-3)}
+  .seal-cell.sold-out::before{
+    content:"售罄";
+    position:absolute; left:50%; top:46%;
+    transform:translate(-50%,-50%) rotate(-12deg);
+    font-family:var(--font-display); font-weight:900;
+    color:var(--crimson); font-size:var(--fs-md);
+    background:var(--paper); padding:2px 8px;
+    border:1.5px solid var(--crimson);
+    letter-spacing:.12em;
+    opacity:.85;
+  }
+  /* 印章右下角徽章（小圆点） */
+  .seal-cell .dot{
+    position:absolute; right:4px; bottom:4px;
+    width:8px; height:8px; border-radius:50%;
+    border:1px solid var(--paper);
+  }
+  .seal-cell.mine .dot{background:var(--moss)}
+  .seal-cell.them .dot{background:var(--seal)}
+  .seal-cell.only .dot{background:var(--ink-3)}
+  .seal-cell.today{outline-width:2.5px}
+
+  /* ── 边注栏 ── */
+  .aside h3{
+    font-family:var(--font-display); font-weight:700;
+    font-size:var(--fs-md); letter-spacing:.08em;
+    color:var(--ink-2);
+    margin:0 0 var(--sp-3);
+    padding-bottom:var(--sp-2);
+    border-bottom:1px solid var(--ink);
+  }
+  .feed{
+    display:flex; flex-direction:column; gap:var(--sp-3);
+  }
+  .feed .entry{
+    font-family:var(--font-hand); font-size:var(--fs-sm);
+    line-height:1.7; color:var(--ink-2);
+    padding-left:var(--sp-3); border-left:2px solid var(--ink);
+    position:relative;
+  }
+  .feed .entry .ts{
+    font-family:var(--font-mono); font-size:var(--fs-xs);
+    color:var(--ink-3); display:block; margin-bottom:2px;
+  }
+  .feed .entry .marker{
+    position:absolute; left:-7px; top:0;
+    width:12px; height:12px; border-radius:50%;
+    background:var(--seal); border:2px solid var(--paper-2);
+  }
+  .feed .entry.marker-green .marker{background:var(--moss)}
+  .feed .entry.marker-amber .marker{background:var(--amber)}
+  .feed .entry b{font-family:var(--font-display); font-weight:700; color:var(--ink)}
+
+  /* 关注列表 */
+  .watchlist{
+    margin-top:var(--sp-5);
+    background:var(--card); border:1px solid var(--rule);
+    padding:var(--sp-3);
+  }
+  .watchlist .row{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:var(--sp-1) 0;
+    font-family:var(--font-display); font-size:var(--fs-sm);
+    border-bottom:1px dashed var(--rule);
+  }
+  .watchlist .row:last-child{border-bottom:none}
+  .watchlist .star{color:var(--seal)}
+
+  /* 数据契约批注 */
+  .caveat{
+    margin-top:var(--sp-5);
+    padding:var(--sp-3);
+    background:var(--card);
+    border:1px dashed var(--amber);
+    border-left:3px solid var(--amber);
+    font-family:var(--font-hand); font-size:var(--fs-sm);
+    color:var(--ink-2); line-height:1.7;
+  }
+  .caveat .label{
+    font-family:var(--font-display); font-weight:700;
+    color:var(--amber); letter-spacing:.08em;
+    display:block; margin-bottom:var(--sp-1);
+    font-size:var(--fs-xs);
+  }
+
+  /* ── 图例 ── */
+  .legend{
+    margin-top:var(--sp-4); padding-top:var(--sp-3);
+    border-top:1px dashed var(--rule);
+    font-size:var(--fs-xs); color:var(--ink-3);
+    display:flex; flex-wrap:wrap; gap:var(--sp-3);
+    font-family:var(--font-display);
+  }
+  .legend .it{display:flex; align-items:center; gap:6px}
+  .legend .swatch{width:18px; height:18px; border-radius:2px; outline:1px solid var(--ink)}
+  .legend .swatch.mine{background:var(--moss-soft); outline-color:var(--moss)}
+  .legend .swatch.them{background:var(--seal-soft); outline-color:var(--seal)}
+  .legend .swatch.only{background:repeating-linear-gradient(135deg, var(--card) 0 3px, var(--paper-2) 3px 6px); outline:1px dashed var(--rule-strong)}
+
+  .footer-note{
+    margin-top:var(--sp-5); text-align:center;
+    font-family:var(--font-hand); color:var(--ink-3);
+    font-size:var(--fs-sm); letter-spacing:.08em;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- ──────── 主区 ──────── -->
+  <div class="main">
+
+    <!-- 报头 -->
+    <div class="masthead">
+      <div class="left">
+        <div class="chop">哨</div>
+        <div>
+          <h1>景山公园 · 哨位日志</h1>
+          <div class="meta">
+            <b>viewid 5170</b> · 5 票种 · 7 天窗口 · 上一轮抓于 <b>2026-08-25 18:21</b> · 北京时间
+          </div>
+        </div>
+      </div>
+      <div class="meta" style="text-align:right">
+        哨位 #03 / 共 5<br>
+        <span style="color:var(--seal); font-weight:600">● 监控中</span>
+      </div>
+    </div>
+
+    <!-- 哨兵日报 -->
+    <div class="daily">
+      <div class="col mine">
+        <div class="ttl"><span class="badge"></span>你的最低价</div>
+        <div class="row">
+          <div class="num">4</div><div class="den">/ 7 天</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          <rect class="bar" x="0"  y="6" width="10" height="18"/>
+          <rect class="bar" x="18" y="3" width="10" height="21"/>
+          <rect class="bar" x="36" y="10" width="10" height="14"/>
+          <rect class="bar" x="54" y="12" width="10" height="12"/>
+          <rect class="bar" x="72" y="0" width="10" height="24"/>
+          <rect class="bar" x="90" y="8" width="10" height="16"/>
+          <rect class="bar" x="108" y="6" width="10" height="18"/>
+        </svg>
+        <div class="trend">↑ +1 vs 上周</div>
+      </div>
+      <div class="col them">
+        <div class="ttl"><span class="badge"></span>他营抢走</div>
+        <div class="row">
+          <div class="num">2</div><div class="den">/ 7 天</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          <rect class="bar" x="0"  y="16" width="10" height="8"/>
+          <rect class="bar" x="18" y="18" width="10" height="6"/>
+          <rect class="bar" x="36" y="8" width="10" height="16"/>
+          <rect class="bar" x="54" y="10" width="10" height="14"/>
+          <rect class="bar" x="72" y="20" width="10" height="4"/>
+          <rect class="bar" x="90" y="14" width="10" height="10"/>
+          <rect class="bar" x="108" y="16" width="10" height="8"/>
+        </svg>
+        <div class="trend">↓ -1 vs 上周</div>
+      </div>
+      <div class="col only">
+        <div class="ttl"><span class="badge"></span>无竞争</div>
+        <div class="row">
+          <div class="num">7</div><div class="den">/ 7 天</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          <rect class="bar" x="0"  y="0" width="10" height="24"/>
+          <rect class="bar" x="18" y="0" width="10" height="24"/>
+          <rect class="bar" x="36" y="0" width="10" height="24"/>
+          <rect class="bar" x="54" y="0" width="10" height="24"/>
+          <rect class="bar" x="72" y="0" width="10" height="24"/>
+          <rect class="bar" x="90" y="0" width="10" height="24"/>
+          <rect class="bar" x="108" y="0" width="10" height="24"/>
+        </svg>
+        <div class="trend">— 持平</div>
+      </div>
+    </div>
+
+    <!-- 印章矩阵 -->
+    <h2 class="section-title">
+      七日价签
+      <span class="num">2026-08-25 → 08-31</span>
+      <span class="quote">— 凡每格最低价,系当夜哨位所记 —</span>
+    </h2>
+
+    <div class="calendar">
+      <table class="cal">
+        <thead>
+          <tr>
+            <th style="width:160px">票种</th>
+            <th class="today"><span class="num">25</span><span class="dow">一</span></th>
+            <th><span class="num">26</span><span class="dow">二</span></th>
+            <th><span class="num">27</span><span class="dow">三</span></th>
+            <th><span class="num">28</span><span class="dow">四</span></th>
+            <th><span class="num">29</span><span class="dow">五</span></th>
+            <th class="weekend"><span class="num">30</span><span class="dow">六</span></th>
+            <th class="weekend"><span class="num">31</span><span class="dow">日</span></th>
+            <th style="width:80px">七日均价</th>
+            <th style="width:100px">我的占比</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr>
+            <td>
+              <div class="sku-name">成人票</div>
+              <div class="sku-meta">
+                自营 999999<br>
+                累计销 1,234 <span class="my-tag">★ 我的</span>
+              </div>
+            </td>
+            <td><div class="seal-cell mine today heat-mid">
+              <div class="price">¥10</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥10</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-mid">
+              <div class="price">¥12</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-high">
+              <div class="price">¥15</div><div class="vendor">同程</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-high">
+              <div class="price">¥18</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-high">
+              <div class="price">¥20</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-high">
+              <div class="price">¥20</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td class="avg"><span class="lbl">均价</span><span class="big">¥15.0</span></td>
+            <td class="mine-count">
+              <span class="lbl">我的</span>
+              <span class="big mine-good">4/7</span>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <div class="sku-name">学生票</div>
+              <div class="sku-meta">
+                自营 999999<br>
+                累计销 856 <span class="my-tag">★ 我的</span>
+              </div>
+            </td>
+            <td><div class="seal-cell mine heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-low">
+              <div class="price">¥6</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-low">
+              <div class="price">¥8</div><div class="vendor">同程</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥10</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-mid">
+              <div class="price">¥12</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥12</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td class="avg"><span class="lbl">均价</span><span class="big">¥8.3</span></td>
+            <td class="mine-count">
+              <span class="lbl">我的</span>
+              <span class="big mine-good">4/7</span>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <div class="sku-name">老人票</div>
+              <div class="sku-meta">
+                自营 999999<br>
+                累计销 432 <span class="my-tag">★ 我的</span>
+              </div>
+            </td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥5</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td class="avg"><span class="lbl">均价</span><span class="big">¥5.0</span></td>
+            <td class="mine-count">
+              <span class="lbl">独占</span>
+              <span class="big">7/7</span>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <div class="sku-name">夜场</div>
+              <div class="sku-meta">
+                自营 999999<br>
+                累计销 178 <span class="my-tag">★ 我的</span>
+              </div>
+            </td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥30</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥30</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-mid">
+              <div class="price">¥35</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-high">
+              <div class="price">¥40</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-high sold-out">
+              <div class="price">¥50</div><div class="vendor">同程</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-high">
+              <div class="price">¥60</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-high">
+              <div class="price">¥60</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td class="avg"><span class="lbl">均价</span><span class="big">¥43.6</span></td>
+            <td class="mine-count">
+              <span class="lbl">我的</span>
+              <span class="big mine-good">5/7</span>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <div class="sku-name">团体票</div>
+              <div class="sku-meta">
+                同程 800123<br>
+                累计销 56
+              </div>
+            </td>
+            <td><div class="seal-cell mine heat-low">
+              <div class="price">¥8</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell only heat-low">
+              <div class="price">¥8</div><div class="vendor">同程</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-low">
+              <div class="price">¥9</div><div class="vendor">驴妈</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-low">
+              <div class="price">¥10</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥12</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell them heat-mid">
+              <div class="price">¥14</div><div class="vendor">飞猪</div><div class="dot"></div>
+            </div></td>
+            <td><div class="seal-cell mine heat-mid">
+              <div class="price">¥14</div><div class="vendor">自营</div><div class="dot"></div>
+            </div></td>
+            <td class="avg"><span class="lbl">均价</span><span class="big">¥10.7</span></td>
+            <td class="mine-count">
+              <span class="lbl">我的</span>
+              <span class="big mine-good">5/7</span>
+            </td>
+          </tr>
+
+        </tbody>
+      </table>
+
+      <div class="legend">
+        <div class="it"><span class="swatch mine"></span>我的（最低价来自自营/我的供应商）</div>
+        <div class="it"><span class="swatch them"></span>他营（被别家抢走）</div>
+        <div class="it"><span class="swatch only"></span>独占（仅一个供应商，无竞争基准）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ──────── 边注栏 ──────── -->
+  <aside class="aside">
+
+    <h3>异动批注</h3>
+    <div class="feed">
+      <div class="entry marker-green">
+        <span class="ts">08-25 18:21:03</span>
+        成人票 · 08-27 <b>我的</b> 抢回最低价 · ¥12（被驴妈挤 4h）
+      </div>
+      <div class="entry">
+        <span class="ts">08-25 18:14:55</span>
+        夜场 · 08-29 同程售罄 · 标价 ¥50 划线 · 库存 0
+      </div>
+      <div class="entry marker-amber">
+        <span class="ts">08-25 17:55:12</span>
+        自营 (999999) 涨幅 <b>+18%</b> · 夜场 ¥30 → ¥35
+      </div>
+      <div class="entry">
+        <span class="ts">08-25 17:30:00</span>
+        团体票 · 同程 (800123) 上架首日 · 累计销 56
+      </div>
+      <div class="entry marker-green">
+        <span class="ts">08-25 12:00:14</span>
+        学生票 · 7 天最低价全归自营 · ¥5 锁定
+      </div>
+    </div>
+
+    <h3 style="margin-top:var(--sp-5)">关注 shelfType</h3>
+    <div class="watchlist">
+      <div class="row"><span>成人票</span><span class="star">★</span></div>
+      <div class="row"><span>夜场</span><span class="star">★</span></div>
+      <div class="row"><span>团体票</span><span>☆</span></div>
+    </div>
+
+    <div class="caveat">
+      <span class="label">📜 数据契约批注</span>
+      当前 <code>price_day</code> 表只存 <code>package_id</code>，
+      最低价来源 vendorId 丢失。<br>
+      修法：(1) <code>parse.py:_parse_price_calendars</code>
+      按 (rid, date, packageId) 拆多行；(2) schema 加
+      <code>winning_vendor_id</code>；(3) round_parser 按
+      addInfo 的 packageId→vendorId 映射填充。
+    </div>
+
+  </aside>
+
+</div>
+
+<div class="footer-note">— 哨位 #03 · 携程哨兵 · 私人哨位日志 —</div>
+
+</body>
+</html>

@@ -7,45 +7,76 @@
   <div class="eyebrow">第 {{ pois|length }} 个哨位 · 轮询中</div>
 
   {% if user and user.role == 'admin' %}
-  <div class="ops-bar" style="display:flex; gap:var(--sp-3); align-items:center; padding:var(--sp-3) var(--sp-4); background:var(--card); border:1px solid var(--rule); border-radius:var(--r); margin-bottom:var(--sp-5); font-size:var(--fs-sm)">
-    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)">手动触发解析:</span>
-    <button class="btn primary sm" type="button" onclick="triggerCapture(this)" id="captureBtn">▶ 立即跑解析</button>
-    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)" id="captureStatus">尚未触发</span>
+  <div class="ops-bar" style="display:flex; gap:var(--sp-3); align-items:center; padding:var(--sp-3) var(--sp-4); background:var(--card); border:1px solid var(--rule); border-radius:var(--r); margin-bottom:var(--sp-5); font-size:var(--fs-sm); flex-wrap:wrap">
+    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)">完整 loop 触发:</span>
+    <button class="btn primary sm" type="button" onclick="triggerCapture(this)" id="captureBtn">▶ 立即抓全部 POI</button>
+    <span class="muted" style="font-size:var(--fs-xs)" id="captureStatus">…</span>
+    <span style="flex:1"></span>
+    <span class="muted" style="font-family:var(--font-mono); font-size:var(--fs-xs)" id="extHealth">…</span>
+    <button class="btn ghost sm" type="button" onclick="refreshHealth()" id="healthBtn" title="手动刷新心跳">↻</button>
   </div>
   <script>
+  async function refreshHealth(){
+    const r = await fetch('/admin/capture/poll', {credentials:'same-origin'});
+    const j = await r.json();
+    renderHealth(j);
+    if (j.new_rounds && j.new_rounds.length) renderNewRounds(j.new_rounds);
+  }
+  function renderHealth(j){
+    const ext = j.extension || {};
+    const q = j.queue || {};
+    const el = document.getElementById('extHealth');
+    const min = ext.last_polled_at ? Math.round((Date.now()-new Date(ext.last_polled_at.replace('Z','+00:00').replace(' ','T')).getTime())/60000) : null;
+    const bits = [];
+    bits.push(min === null ? '扩展:未上线' : (min < 60 ? `扩展 ✓ ${min}m前` : `扩展 ⚠ ${min}m前`));
+    bits.push(`队列 ${q.pending||0} 待/${q.consumed||0} 消费`);
+    if (ext.last_version) bits.push(`v${ext.last_version}`);
+    el.textContent = bits.join(' · ');
+    el.style.color = (min === null || min > 60) ? 'var(--warn, #c33)' : '';
+  }
+  function renderNewRounds(rs){
+    const el = document.getElementById('captureStatus');
+    const parts = rs.slice(0,3).map(r => `POI ${r.viewid} ${r.status} (${r.sku_count||0}sku)`);
+    el.textContent = '↻ 新增: ' + parts.join(' · ');
+    el.style.color = 'var(--ok, #2a7)';
+  }
   async function triggerCapture(btn){
     btn.disabled = true;
-    btn.textContent = '解析中…';
+    btn.textContent = '下发中…';
     btn.classList.remove('ok','info','err');
     const status = document.getElementById('captureStatus');
-    status.textContent = '调用 /admin/capture/trigger …';
+    status.textContent = '写指令队列 + 同步跑解析…';
     status.style.color = '';
     try {
       const r = await fetch('/admin/capture/trigger', {method: 'POST', credentials: 'same-origin'});
       const j = await r.json();
-      const d = j.detail || {};
-      const stdout = (d.stdout || '').trim();
       if (j.ok) {
-        // stdout 形如 "round 3: parsed 7 SKUs\nround 4: ERROR ..." → 汇总
-        const okLines = stdout.split('\n').filter(l => l.includes('parsed'));
-        const errLines = stdout.split('\n').filter(l => l.includes('ERROR'));
-        if (okLines.length) {
-          const skus = okLines.reduce((s,l)=>s+(parseInt(l.match(/parsed (\d+)/)?.[1])||0), 0);
-          status.textContent = `✓ 已解析 ${okLines.length} 轮 / ${skus} SKU · ${(j.ts||'').slice(11,19)}`;
-          btn.classList.add('ok');
-          // 5 秒后再刷新，把"最近告警/KPI"同步上去
-          setTimeout(()=>location.reload(), 5000);
-        } else if (stdout.startsWith('no pending rounds')) {
-          status.textContent = 'ℹ 没有 pending 轮（extension 没在抓或解析任务刚跑过）';
-          btn.classList.add('info');
-        } else {
-          status.textContent = '✓ 完成 · ' + (j.ts||'').slice(11,19) + ' · ' + stdout.slice(0,80);
-        }
-      } else if (j.busy) {
-        status.textContent = '⏳ ' + (d.detail || '解析任务进行中');
+        const queued = j.queued || 0;
+        const skus = j.parsed_skus || 0;
+        const extAlive = j.extension_alive;
+        let msg = `✓ 已下发 ${queued} 条抓取指令 · 同步解析 ${skus} SKU`;
+        if (!extAlive) msg += ' · 扩展当前未活,等下次浏览器打开自动消费';
+        if (j.parser && j.parser.busy) msg += ' · parser 占用,跳过本次同步解析';
+        status.textContent = msg;
+        btn.classList.add('ok');
+        // 30 秒内每 5 秒查一轮,看 round 是否进库 (扩展回写后)
+        let ticks = 0;
+        const iv = setInterval(async ()=>{
+          ticks++;
+          try {
+            const r2 = await fetch('/admin/capture/poll', {credentials:'same-origin'});
+            const j2 = await r2.json();
+            renderHealth(j2);
+            if (j2.new_rounds && j2.new_rounds.length) {
+              renderNewRounds(j2.new_rounds);
+              clearInterval(iv);
+              setTimeout(()=>location.reload(), 4000);
+            }
+          } catch(_) {}
+          if (ticks >= 6) clearInterval(iv);  // 30 秒后停止轮询
+        }, 5000);
       } else {
-        const errMsg = d.detail || JSON.stringify(d).slice(0,120);
-        status.textContent = '✗ ' + errMsg;
+        status.textContent = '✗ ' + (j.detail || JSON.stringify(j).slice(0,120));
         btn.classList.add('err');
       }
     } catch(e) {
@@ -53,9 +84,12 @@
       btn.classList.add('err');
     } finally {
       btn.disabled = false;
-      btn.textContent = '▶ 立即跑解析';
+      btn.textContent = '▶ 立即抓全部 POI';
     }
   }
+  // 首次进入页：自动拉心跳一次
+  refreshHealth();
+  setInterval(refreshHealth, 60000);
   </script>
   {% endif %}
 

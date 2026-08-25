@@ -1,79 +1,275 @@
 {% extends "base.html" %}
 {% block title %}{{ poi.name }} · 携程哨兵{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/poi-detail.css">
+{% endblock %}
 {% block body %}
 
-<div class="page">
+<div class="poi-page-body">
+<div class="poi-page">
 
-  <div class="eyebrow"><a href="/">← 总览</a></div>
-  <div class="page-header">
-    <div>
-      <h1>{{ poi.name }}</h1>
-      <div class="sub">viewid {{ poi.viewid }} · 上一轮快照</div>
-    </div>
-  </div>
+  <!-- ──────── 主区 ──────── -->
+  <div class="main">
 
-  {% if not rows %}
-  <div class="empty">
-    <div class="icon">·</div>
-    <div>本哨位尚未落盘 · 等下一轮 round</div>
-  </div>
-  {% else %}
-
-  {% set ns = namespace(current_shelf=0) %}
-  {% for row in rows %}
-    {% if row.shelf_type_id != ns.current_shelf %}
-      {% if ns.current_shelf != 0 %}</div></div>{% endif %}
-      {% set ns.current_shelf = row.shelf_type_id or 0 %}
-      <div class="shelf-group">
-        <div class="header">
-          <span class="title">{{ row.shelf_type_name or '（未分组）' }}</span>
-          <span class="shelf-id">shelf_type_id {{ row.shelf_type_id or '-' }}</span>
-          <span class="wl-toggle {% if row.shelf_type_id in watched %}on{% endif %}"
-                hx-post="/admin/watchlist/toggle"
-                hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ row.shelf_type_id }}","active":"{% if row.shelf_type_id in watched %}0{% else %}1{% endif %}"}'
-                hx-trigger="click"
-                hx-swap="none">
-            {% if row.shelf_type_id in watched %}★ 关注中{% else %}☆ 加入关注{% endif %}
-          </span>
+    <!-- 报头 -->
+    <div class="masthead-grid">
+      <div class="left">
+        <div class="chop">哨</div>
+        <div>
+          <h1>{{ poi.name }} · 哨位日志</h1>
+          <div class="meta">
+            <b>viewid {{ poi.viewid }}</b> ·
+            {{ matrix.tickets|length if matrix and matrix.tickets else 0 }} 票种 ·
+            7 天窗口 ·
+            {% if matrix and matrix.last_round_at %}
+              上一轮抓于 <b>{{ matrix.last_round_at | bj_time }}</b>
+            {% else %}
+              尚未落盘
+            {% endif %}
+            · 北京时间
+          </div>
         </div>
-        <div class="body">
+      </div>
+      <div class="right">
+        哨位 #{{ poi.viewid }}<br>
+        {% if matrix and matrix.last_round_at %}
+          <span style="color:var(--seal); font-weight:600">● 监控中</span>
+        {% else %}
+          <span style="color:var(--ink-3)">○ 待首轮</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if not matrix or not matrix.tickets %}
+    <div class="empty">
+      <div class="icon">·</div>
+      <div>本哨位尚未落盘日历数据 · 等下一轮 round（后台会自动抓取）</div>
+      {% if matrix and matrix.shelf_groups %}
+        <div style="margin-top:var(--sp-3); color:var(--ink-3); font-size:var(--fs-sm); font-family:var(--font-mono)">
+          已抓到 {{ matrix.shelf_groups|length }} 个 shelf，但 priceCalendar 还在路上
+        </div>
+      {% endif %}
+    </div>
+    {% else %}
+
+    <!-- 哨兵日报 -->
+    {% set total_days = matrix.tickets|length * 7 %}
+    <div class="daily">
+      <div class="col mine">
+        <div class="ttl"><span class="badge"></span>我的最低价</div>
+        <div class="row">
+          <div class="num">{{ daily_summary.mine if daily_summary else 0 }}</div>
+          <div class="den">/ {{ total_days }} 格</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          {% set mine_n = daily_summary.mine if daily_summary else 0 %}
+          {% set them_n = daily_summary.them if daily_summary else 0 %}
+          {% set only_n = daily_summary.only if daily_summary else 0 %}
+          <rect class="bar" x="0"   y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+          <rect class="bar" x="18"  y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+          <rect class="bar" x="36"  y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+          <rect class="bar" x="54"  y="{{ 24 - only_n * 2 }}" width="10" height="{{ only_n * 2 }}"/>
+          <rect class="bar" x="72"  y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+          <rect class="bar" x="90"  y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+          <rect class="bar" x="108" y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+        </svg>
+        <div class="trend">— 哨位视角</div>
+      </div>
+      <div class="col them">
+        <div class="ttl"><span class="badge"></span>他营抢走</div>
+        <div class="row">
+          <div class="num">{{ daily_summary.them if daily_summary else 0 }}</div>
+          <div class="den">/ {{ total_days }} 格</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          <rect class="bar" x="0"   y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+          <rect class="bar" x="18"  y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+          <rect class="bar" x="36"  y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+          <rect class="bar" x="54"  y="{{ 24 - only_n * 2 }}" width="10" height="{{ only_n * 2 }}"/>
+          <rect class="bar" x="72"  y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+          <rect class="bar" x="90"  y="{{ 24 - mine_n * 2 }}" width="10" height="{{ mine_n * 2 }}"/>
+          <rect class="bar" x="108" y="{{ 24 - them_n * 2 }}" width="10" height="{{ them_n * 2 }}"/>
+        </svg>
+        <div class="trend">— 被别家占先</div>
+      </div>
+      <div class="col only">
+        <div class="ttl"><span class="badge"></span>无竞争</div>
+        <div class="row">
+          <div class="num">{{ daily_summary.only if daily_summary else 0 }}</div>
+          <div class="den">/ {{ total_days }} 格</div>
+        </div>
+        <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none">
+          <rect class="bar" x="0"   y="6" width="10" height="18"/>
+          <rect class="bar" x="18"  y="3" width="10" height="21"/>
+          <rect class="bar" x="36"  y="8" width="10" height="16"/>
+          <rect class="bar" x="54"  y="12" width="10" height="12"/>
+          <rect class="bar" x="72"  y="0" width="10" height="24"/>
+          <rect class="bar" x="90"  y="6" width="10" height="18"/>
+          <rect class="bar" x="108" y="3" width="10" height="21"/>
+        </svg>
+        <div class="trend">— 单家报价</div>
+      </div>
+    </div>
+
+    <!-- shelf 总览条 -->
+    {% if matrix.shelf_groups %}
+    <div class="shelf-summary">
+      <span class="lbl">关注 shelfType</span>
+      {% for sg in matrix.shelf_groups %}
+        <span class="chip {% if sg.id in watched %}on{% endif %}"
+              hx-post="/admin/watchlist/toggle"
+              hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ sg.id }}","active":"{% if sg.id in watched %}0{% else %}1{% endif %}"}'
+              hx-trigger="click"
+              hx-swap="none">
+          {% if sg.id in watched %}<span class="star">★</span>{% else %}☆{% endif %}
+          {{ sg.name }}
+          <span style="color:var(--ink-3); margin-left:6px">{{ sg.ticket_count }}票</span>
+        </span>
+      {% endfor %}
+    </div>
     {% endif %}
 
-    <div class="sku-row {% if row.is_mine_vid %}mine{% endif %}">
-      <div>
-        {% if row.rank == 1 %}
-          <span class="seal r1">1</span>
-        {% elif row.rank == 2 %}
-          <span class="seal r2">2</span>
-        {% elif row.rank == 3 %}
-          <span class="seal r3">3</span>
-        {% else %}
-          <span class="seal">{{ row.rank or '-' }}</span>
-        {% endif %}
-      </div>
-      <div class="sku-info">
-        <div class="sku-name">{{ row.full_name }}</div>
-        <div class="sku-meta">
-          {{ row.brand_company_name or '-' }}
-          {% if row.is_mine_vid %}<span class="mine-tag">我的</span>{% endif %}
+    <!-- 印章矩阵 -->
+    <h2 class="section-title">
+      七日价签
+      <span class="num">{{ matrix.date_range }}</span>
+      <span class="quote">— 凡每格最低价,系当夜哨位所记 —</span>
+    </h2>
+
+    <div class="calendar">
+      <table class="cal">
+        <thead>
+          <tr>
+            <th style="width:160px">票种</th>
+            {% for d in matrix.dates %}
+              {% set dow_short = ['一','二','三','四','五','六','日'][d.dow] %}
+              <th class="{% if d.is_today %}today{% endif %} {% if d.is_weekend %}weekend{% endif %}">
+                <span class="num">{{ d.day }}</span>
+                <span class="dow">{{ dow_short }}</span>
+              </th>
+            {% endfor %}
+            <th style="width:80px">七日均价</th>
+            <th style="width:100px">我的占比</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in matrix.tickets %}
+            <tr>
+              <td>
+                <div class="sku-name">{{ t.name }}</div>
+                <div class="sku-meta">
+                  vendor {{ t.primary_vendor_id }}
+                  {% if t.is_mine %}<span class="my-tag">★ 我的</span>{% endif %}
+                  {% if t.sale_count %}<br>累计销 {{ '{:,}'.format(t.sale_count) }}{% endif %}
+                </div>
+              </td>
+              {% for d in matrix.dates %}
+                {% set cell = t.cells[loop.index0] if t.cells|length > loop.index0 else None %}
+                {% set has_vendor = cell and cell.winning_vendor_id %}
+                {% set state = cell.state if cell else 'empty' %}
+                {% set heat = cell.heat if cell else 'heat-mid' %}
+                {% set today_cls = ' today' if d.is_today else '' %}
+                {% set state_cls = ' ' + state if state else '' %}
+                <td>
+                  {% if cell and cell.sale_price %}
+                    <div class="seal-cell{{ state_cls }}{{ today_cls }} {{ heat }}"
+                         title="{% if has_vendor %}{{ cell.winning_vendor_name }} · ¥{{ '%.0f'|format(cell.sale_price) }} · {{ d.iso }}{% else %}¥{{ '%.0f'|format(cell.sale_price) }} · {{ d.iso }}{% endif %}">
+                      <div class="price">¥{{ '%.0f'|format(cell.sale_price) }}</div>
+                      <div class="vendor">{{ cell.vendor_label or '—' }}</div>
+                      <div class="dot"></div>
+                    </div>
+                  {% else %}
+                    <div class="seal-cell only{{ today_cls }} {{ heat }}" title="无数据 · {{ d.iso }}">
+                      <div class="price">—</div>
+                      <div class="vendor">缺</div>
+                    </div>
+                  {% endif %}
+                </td>
+              {% endfor %}
+              <td class="avg">
+                <span class="lbl">均价</span>
+                <span class="big">¥{{ '%.1f'|format(t.avg_7) if t.avg_7 else '—' }}</span>
+              </td>
+              <td class="mine-count">
+                <span class="lbl">{{ '我的' if t.mine_state == 'mixed' else ('独占' if t.mine_state == 'only' else '—') }}</span>
+                <span class="big {% if t.mine_state == 'mixed' and t.mine_ratio >= 0.5 %}mine-good{% elif t.mine_state == 'mixed' and t.mine_ratio < 0.5 %}mine-bad{% endif %}">
+                  {{ t.mine_label }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="legend">
+        <div class="it"><span class="swatch mine"></span>我的（最低价来自自营/我的供应商）</div>
+        <div class="it"><span class="swatch them"></span>他营（被别家抢走）</div>
+        <div class="it"><span class="swatch only"></span>独占/缺数据（无竞争基准）</div>
+        <div class="it" style="margin-left:auto">
+          {% if not has_vendor_data %}
+            <span style="color:var(--amber); font-weight:600">⚠ 当前价格无 vendor 来源</span>
+          {% endif %}
         </div>
-      </div>
-      <div class="price">
-        ¥{{ '%.0f'|format(row.display_price or 0) }}
-        {% if row.market_price and row.market_price > row.display_price %}
-          <span class="market">¥{{ '%.0f'|format(row.market_price) }}</span>
-        {% endif %}
-      </div>
-      <div class="sales">
-        <span class="v">{{ '{:,}'.format(row.sale_count or 0) }}</span> 销
       </div>
     </div>
 
-  {% endfor %}
-  </div></div>
+    {% endif %}
 
-  {% endif %}
+  </div>
 
+  <!-- ──────── 边注栏 ──────── -->
+  <aside class="aside">
+
+    <h3>异动批注</h3>
+    <div class="feed">
+      {% if not alerts %}
+        <div class="entry">
+          <span class="ts">—</span>
+          暂无最近异动 · 等待 rank 变化或库存告警
+        </div>
+      {% else %}
+        {% for a in alerts[:5] %}
+          <div class="entry {% if a.severity == 'warning' %}marker-amber{% elif a.severity == 'critical' %}marker-amber{% elif a.severity == 'info' %}marker-green{% endif %}">
+            <span class="ts">{{ a.ts | bj_time if a.ts else '' }}</span>
+            {{ a.type }} · <b>{{ a.sku_name or a.shelf_type_name or '' }}</b> · {{ a.payload_preview }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <h3 style="margin-top:var(--sp-5)">关注 shelfType</h3>
+    <div class="watchlist">
+      {% if not matrix or not matrix.shelf_groups %}
+        <div class="row" style="color:var(--ink-3)">— 尚未落盘</div>
+      {% else %}
+        {% for sg in matrix.shelf_groups %}
+          <div class="row">
+            <span>
+              {% if sg.id in watched %}<span class="star">★</span>{% else %}☆{% endif %}
+              {{ sg.name }}
+            </span>
+            <span style="color:var(--ink-3); font-family:var(--font-mono); font-size:var(--fs-xs)">
+              {{ sg.ticket_count }}票
+            </span>
+          </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <div class="caveat">
+      <span class="label">📜 数据契约批注</span>
+      <code>price_day</code> 当前只存 <code>package_id</code>，
+      winning_vendor_id 待 <code>priceCalendar</code> 拦截落地。
+      <br><br>
+      <span style="color:var(--ink-3)">进度：</span>扩展侧 <code>TARGET_PATHS</code> 已加，价格到 round_parser
+      拆多行后即生效。
+    </div>
+
+  </aside>
+
+</div>
+
+<div class="footer-note">— 哨位 #{{ poi.viewid }} · 携程哨兵 · 私人哨位日志 —</div>
 </div>
 
 <script src="https://unpkg.com/htmx.org@1.9.10"></script>

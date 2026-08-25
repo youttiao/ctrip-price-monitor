@@ -6,6 +6,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "uvicorn", "web.server:app", "--host", "127.0.0.1", "--port", "8000", "--log-level", "info"],
       "port": 8000
+    },
+    {
+      "name": "poi-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8765", "--bind", "127.0.0.1"],
+      "port": 8765
     }
   ]
 }

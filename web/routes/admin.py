@@ -115,41 +115,146 @@ _last_trigger: dict = {"ts": None, "ok": None, "detail": None}
 
 @router.post("/capture/trigger", response_class=JSONResponse)
 def capture_trigger(request: Request):
-    """手动触发 round_parser 同步跑一次。"""
+    """手动触发：
+    1) 给每个 enabled POI 写一条 'capture_now' 命令到 extension_commands
+       → 后台扩展每 30s 轮询消费。命令队列是「粘性」的：
+       关浏览器期间指令留在 DB，扩展下次启动照样拉。
+    2) 同步 spawn round_parser 处理已存在的 pending round（即 fetch 已经落盘
+       但还没解析的）。新指令的产物会在扩展回写后由后续 parser 处理。
+
+    返回值：
+      queued           下发给扩展的命令数
+      parsed_rounds    本次同步解析的 round 数
+      parsed_skus      本次产生的 SKU 数（informational）
+      extension_alive  最近心跳 < 60min
+    """
     user = _require_admin(request)
+    conn = request.app.state.db
+
+    # 1) 给每个 enabled POI 写 capture_now 指令
+    pois = conn.execute(
+        "SELECT viewid, name FROM pois WHERE enabled=1 ORDER BY viewid"
+    ).fetchall()
+    now = datetime.now(timezone.utc).isoformat()
+    queued = 0
+    for p in pois:
+        # 同 POI 短时间内去重，避免按钮被狂点累积成山
+        recent = conn.execute("""
+            SELECT id FROM extension_commands
+            WHERE cmd='capture_now' AND consumed_at IS NULL
+              AND json_extract(args_json, '$.viewid') = ?
+              AND created_at > datetime(?, '-30 seconds')
+            LIMIT 1
+        """, (p["viewid"], now)).fetchone()
+        if recent:
+            continue
+        conn.execute("""
+            INSERT INTO extension_commands (cmd, args_json, created_at, poll_after_at)
+            VALUES ('capture_now', ?, ?, NULL)
+        """, (_json.dumps({"viewid": p["viewid"], "name": p["name"]}), now))
+        queued += 1
+    conn.commit()
+
+    # 2) 同步跑 parser 处理已入库的 pending round
+    parser_stdout = ""
+    parser_rc = 0
+    parser_busy = False
     if _parser_lock.locked():
-        return JSONResponse({"ok": False, "busy": True,
-                             "detail": "已有解析任务在跑（systemd timer 或上一次手动），请稍后再试"},
-                            status_code=409)
+        parser_busy = True
+    else:
+        def _run_parser():
+            nonlocal parser_stdout, parser_rc
+            with _parser_lock:
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "scripts.round_parser", "--limit", "50"],
+                        cwd=str(ROOT), capture_output=True, text=True, timeout=120,
+                    )
+                    parser_stdout = result.stdout[-1500:]
+                    parser_rc = result.returncode
+                except subprocess.TimeoutExpired:
+                    parser_stdout = "parser timeout (>120s)"
+                    parser_rc = -1
+                except Exception as e:
+                    parser_stdout = f"parser error: {e}"
+                    parser_rc = -2
+        t = threading.Thread(target=_run_parser, daemon=True)
+        t.start()
+        t.join(timeout=130)
 
-    def _run():
-        global _last_trigger
-        with _parser_lock:
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "scripts.round_parser", "--limit", "20"],
-                    cwd=str(ROOT), capture_output=True, text=True, timeout=60,
-                )
-                _last_trigger = {
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "ok": result.returncode == 0,
-                    "stdout": result.stdout[-1000:],
-                    "stderr": result.stderr[-500:] if result.stderr else "",
-                    "returncode": result.returncode,
-                }
-            except subprocess.TimeoutExpired:
-                _last_trigger = {"ts": datetime.now(timezone.utc).isoformat(),
-                                 "ok": False, "detail": "timeout (>60s)"}
-            except Exception as e:
-                _last_trigger = {"ts": datetime.now(timezone.utc).isoformat(),
-                                 "ok": False, "detail": str(e)}
+    parsed_skus = 0
+    if not parser_busy and parser_rc == 0:
+        # 从 stdout 抽 "parsed N SKUs" 行汇总
+        for line in parser_stdout.splitlines():
+            if "parsed" in line and "SKU" in line:
+                m = line.split("parsed")[1].split("SKU")[0].strip()
+                try:
+                    parsed_skus += int(m)
+                except ValueError:
+                    pass
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=70)
-    return JSONResponse({"ok": _last_trigger.get("ok"),
-                         "ts": _last_trigger.get("ts"),
-                         "detail": _last_trigger})
+    # 3) 扩展心跳判定
+    hb = conn.execute(
+        "SELECT last_polled_at FROM extension_heartbeat WHERE id=1"
+    ).fetchone()
+    ext_alive = False
+    if hb and hb["last_polled_at"]:
+        try:
+            last = datetime.fromisoformat(hb["last_polled_at"].replace("Z", "+00:00"))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            ext_alive = (datetime.now(timezone.utc) - last).total_seconds() < 3600
+        except Exception:
+            pass
+
+    global _last_trigger
+    _last_trigger = {
+        "ts": now,
+        "queued": queued,
+        "parsed_skus": parsed_skus,
+        "extension_alive": ext_alive,
+        "parser": {
+            "busy": parser_busy, "rc": parser_rc, "stdout_tail": parser_stdout[-600:],
+        },
+    }
+    return JSONResponse({"ok": True, **_last_trigger})
+
+
+@router.get("/capture/poll", response_class=JSONResponse)
+def capture_poll(request: Request):
+    """前端轮询：最近 N 分钟内新 round 数 + 扩展心跳 + 已消费/未消费命令数。"""
+    _require_admin(request)
+    conn = request.app.state.db
+    # 最近 5 分钟内 round
+    rows = conn.execute("""
+        SELECT id, poi_viewid, source, received_at, status, sku_count
+        FROM rounds WHERE received_at > datetime('now', '-5 minutes')
+        ORDER BY id DESC LIMIT 20
+    """).fetchall()
+    new_rounds = [{
+        "id": r["id"], "viewid": r["poi_viewid"], "source": r["source"],
+        "received_at": r["received_at"], "status": r["status"], "sku_count": r["sku_count"] or 0
+    } for r in rows]
+    # 命令队列状态
+    q = conn.execute("""
+        SELECT
+          SUM(CASE WHEN consumed_at IS NULL THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN consumed_at IS NOT NULL THEN 1 ELSE 0 END) AS consumed
+        FROM extension_commands WHERE created_at > datetime('now', '-1 hour')
+    """).fetchone()
+    hb = conn.execute(
+        "SELECT last_polled_at, last_version, last_commands_returned FROM extension_heartbeat WHERE id=1"
+    ).fetchone()
+    return {
+        "ok": True,
+        "new_rounds": new_rounds,
+        "extension": {
+            "last_polled_at": hb["last_polled_at"] if hb else None,
+            "last_commands_returned": hb["last_commands_returned"] if hb else 0,
+            "last_version": hb["last_version"] if hb else None,
+        },
+        "queue": {"pending": q["pending"] or 0, "consumed": q["consumed"] or 0},
+    }
 
 
 @router.get("/capture/last", response_class=JSONResponse)
