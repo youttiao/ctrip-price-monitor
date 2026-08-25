@@ -189,6 +189,16 @@
     .poi-status.err { color: var(--red); }
     .poi-status.run { color: var(--amber); }
     .poi-status .count { color: var(--amber); }
+    .poi-status .mute  { color: var(--paper-mute); opacity: .7; font-size: 10px; }
+    .poi-status .err   { color: var(--red); }
+    .poi-status .t-done { color: var(--green); }
+    .poi-status .t-pend { color: var(--amber); }
+    .poi-status .t-err  { color: var(--red); }
+    .poi-status .t-miss { color: var(--paper-mute); opacity: .6; }
+    .poi-status .t-done,
+    .poi-status .t-pend,
+    .poi-status .t-err,
+    .poi-status .t-miss { font-size: 10.5px; line-height: 1.45; padding-left: 6px; }
 
     /* ---------- GUIDE LINK ---------- */
     .guide {
@@ -231,7 +241,7 @@
 <body>
   <header>
     <div class="mark">携程哨兵<small>SENTRY · COLLECTOR</small></div>
-    <div class="clock"><span id="clockText">--:--:--</span><b id="verText">v0.2.3</b></div>
+    <div class="clock"><span id="clockText">--:--:--</span><b id="verText"></b></div>
   </header>
 
   <section>

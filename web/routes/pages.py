@@ -149,23 +149,11 @@ def poi_detail(request: Request, viewid: int):
             ORDER BY s.shelf_type_id NULLS LAST, rh.rank NULLS LAST, s.display_price
         """, (last_round_id,)).fetchall()
 
-    # shelf 分组（用于顶部关注 chip 与边注）
-    shelf_groups_map: dict[int, dict] = {}
-    for r in rows:
-        st_id = r["shelf_type_id"] or 0
-        sg = shelf_groups_map.setdefault(st_id, {
-            "id": st_id if st_id else None,
-            "name": r["shelf_type_name"] or "（未分组）",
-            "ticket_count": 0,
-        })
-        sg["ticket_count"] += 1
-    shelf_groups = list(shelf_groups_map.values())
-
-    # price_day 查询（最近 7 天）
-    matrix = _build_calendar_matrix(conn, last_round_id, viewid, my_vids, days=7)
+    # price_day 查询（最近 7 天；shelf_groups 也在 matrix 里组装并标注主次）
+    matrix = _build_calendar_matrix(conn, last_round_id, viewid, my_vids, watched, days=7)
     daily_summary = matrix.pop("daily_summary", {"mine": 0, "them": 0, "only": 0})
     has_vendor_data = matrix.pop("has_vendor_data", False)
-    matrix["shelf_groups"] = shelf_groups
+    shelf_groups = matrix.get("shelf_groups", [])
     matrix["last_round_at"] = last_round_at
 
     # 最近 5 条 alerts（按此 POI 过滤）
@@ -200,7 +188,7 @@ def poi_detail(request: Request, viewid: int):
                    alerts=enriched_alerts)
 
 
-def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
+def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
     """从 price_day 组装 7 天 × N 票种 矩阵。
 
     Returns dict 包含：
@@ -209,10 +197,11 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
                    cells: [{sale_price, winning_vendor_id, vendor_label,
                             available, state, heat}, ...],
                    avg_7, mine_state, mine_ratio, mine_label}, ...]
+      - shelf_groups: [{id, name, role, ticket_count, mine_count, sale_total,
+                        min_price, avg_price, max_price, tickets}, ...]
       - daily_summary: {mine, them, only}
       - has_vendor_data: bool
       - date_range: "08-25 → 08-31"
-      - tickets: []
     """
     from datetime import date, timedelta
 
@@ -226,7 +215,7 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
     date_list = [today + timedelta(days=i) for i in range(days)]
     iso_dates = [d.isoformat() for d in date_list]
 
-    # 一次拉全该 round 的 price_day
+    # 一次拉全该 round 的 price_day（同时取 sku 的 raw_resource 以派生 ticket_group / audience）
     placeholders = ",".join("?" * len(iso_dates))
     rows = conn.execute(f"""
         SELECT pd.resource_id, pd.sale_date, pd.sale_price, pd.min_price,
@@ -235,6 +224,7 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
                s.full_name AS sku_name, s.primary_vendor_id,
                s.shelf_type_id, s.shelf_type_name,
                s.sale_count,
+               s.raw_resource,
                v.name AS winning_vendor_name
         FROM price_day pd
         JOIN sku_snapshot s ON s.round_id=pd.round_id AND s.resource_id=pd.resource_id
@@ -244,17 +234,38 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
     """, (round_id, *iso_dates)).fetchall()
 
     # 按 resource_id → 按 sale_date → cell
+    import json as _json
     from collections import defaultdict
     cells_by_rid: dict[int, dict[str, dict]] = defaultdict(dict)
     sku_meta: dict[int, dict] = {}
     for r in rows:
         rid = r["resource_id"]
         if rid not in sku_meta:
+            # 解析 raw_resource，派生 ticket_group_id (=level1SaleUnitId) 与 audience_label (=fullName)
+            raw = {}
+            try:
+                raw = _json.loads(r["raw_resource"] or "{}")
+            except Exception:
+                raw = {}
+            tg_id = raw.get("level1SaleUnitId")
+            aud_label = raw.get("fullName") or r["sku_name"] or f"rid {rid}"
+            full_product_name = raw.get("name") or aud_label
+            # 父组名 = full_product_name 去掉 audience_label 后缀
+            if aud_label and full_product_name.endswith(aud_label):
+                group_name = full_product_name[: -len(aud_label)].rstrip(" （(")
+            else:
+                group_name = full_product_name
+            # 父组级 saleCount（从父组里挑一个 SKU 的即可，下面会用 max）
             sku_meta[rid] = {
                 "name": r["sku_name"] or f"rid {rid}",
                 "primary_vendor_id": r["primary_vendor_id"],
                 "is_mine": r["primary_vendor_id"] in my_vids,
                 "sale_count": r["sale_count"],
+                "shelf_type_id": r["shelf_type_id"],
+                "shelf_type_name": r["shelf_type_name"],
+                "ticket_group_id": tg_id,
+                "audience_label": aud_label,
+                "ticket_group_name": group_name,
             }
         cells_by_rid[rid][r["sale_date"]] = {
             "sale_price": r["sale_price"],
@@ -358,6 +369,11 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
             "primary_vendor_id": meta.get("primary_vendor_id"),
             "is_mine": meta.get("is_mine"),
             "sale_count": meta.get("sale_count"),
+            "shelf_type_id": meta.get("shelf_type_id"),
+            "shelf_type_name": meta.get("shelf_type_name"),
+            "ticket_group_id": meta.get("ticket_group_id"),
+            "ticket_group_name": meta.get("ticket_group_name"),
+            "audience_label": meta.get("audience_label"),
             "cells": cells,
             "avg_7": avg_7,
             "mine_state": mine_state,
@@ -368,8 +384,114 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
         them_days += them_count
         only_days += only_count
 
-    # 排序：shelf 分组（已经按 rid 顺序进来），is_mine 优先
-    tickets.sort(key=lambda t: (not t["is_mine"], t["name"] or ""))
+    # 排序：先 shelf 分组（主组优先 + 销量降序），组内 is_mine 优先
+    tickets.sort(key=lambda t: (not t["is_mine"], -(t["sale_count"] or 0), t["name"] or ""))
+
+    # ─── 按 shelf_type 重新分组 + 主次判定 ───
+    # 主次规则：watched 中的 shelf_type 标 primary；
+    # 没有 watched 时，按"组内 mine SKU 数"取最多的一组 primary；其余为 secondary。
+    from collections import defaultdict as _dd
+    by_shelf: dict[int, list[dict]] = _dd(list)
+    for t in tickets:
+        st = t.get("shelf_type_id") or 0
+        by_shelf[st].append(t)
+
+    # 计算每组的 mine_count / sale_total 用于排序 + 主次判定
+    shelf_stats: dict[int, dict] = {}
+    for st, items in by_shelf.items():
+        mc = sum(1 for it in items if it.get("is_mine"))
+        st_total = sum((it.get("sale_count") or 0) for it in items)
+        all_prices = [c.get("sale_price") for it in items for c in it.get("cells", []) if c.get("sale_price")]
+        shelf_stats[st] = {
+            "mine_count": mc,
+            "sale_total": st_total,
+            "min_price": min(all_prices) if all_prices else None,
+            "avg_price": (sum(all_prices) / len(all_prices)) if all_prices else None,
+            "max_price": max(all_prices) if all_prices else None,
+        }
+
+    # 主次判定
+    watched_keys = set(watched) if watched else set()
+    # 主组：watched 集合命中；否则 fallback 取 mine_count 最大的一组
+    primary_shelves: set[int] = set()
+    for st in by_shelf:
+        if st in watched_keys and st != 0:
+            primary_shelves.add(st)
+    if not primary_shelves:
+        # 取 mine_count 最大的一组（排除未分组的 0）
+        ranked = [(st, shelf_stats[st]["mine_count"]) for st in by_shelf if st != 0]
+        if ranked:
+            ranked.sort(key=lambda x: -x[1])
+            if ranked[0][1] > 0:
+                primary_shelves.add(ranked[0][0])
+    # 兜底：仍无主组时，按 sale_total 取最大的一组为主
+    if not primary_shelves:
+        ranked = [(st, shelf_stats[st]["sale_total"]) for st in by_shelf if st != 0]
+        if ranked:
+            ranked.sort(key=lambda x: -x[1])
+            primary_shelves.add(ranked[0][0])
+
+    # 组排序：主组在前，次组按 sale_total 降序
+    def _shelf_sort_key(st: int):
+        stats = shelf_stats[st]
+        return (0 if st in primary_shelves else 1, -stats["sale_total"], -stats["mine_count"], st)
+
+    shelf_order = sorted(by_shelf.keys(), key=_shelf_sort_key)
+
+    shelf_groups = []
+    for st in shelf_order:
+        items = by_shelf[st]
+        meta = items[0]
+        stats = shelf_stats[st]
+        role = "primary" if st in primary_shelves else "secondary"
+
+        # ── 在 shelf 内再按 ticket_group_id 分组（人群变体 → 父票组） ──
+        by_tg: dict = _dd(list)
+        for t in items:
+            tg_id = t.get("ticket_group_id") or 0
+            by_tg[tg_id].append(t)
+
+        ticket_groups = []
+        for tg_id, variants in by_tg.items():
+            # 父票组名：取所有 variant 的 full product name 的最长公共前缀（去掉尾部标点）
+            names = [v.get("ticket_group_name") or "" for v in variants]
+            tg_name = _longest_common_prefix(names).rstrip(" （(-【【不限成人儿童") or "（未分组）"
+            # 父票组级价格/销量汇总
+            tg_all_prices = [
+                c.get("sale_price") for v in variants
+                for c in v.get("cells", []) if c.get("sale_price")
+            ]
+            tg_mine = sum(1 for v in variants if v.get("is_mine"))
+            tg_sale = sum((v.get("sale_count") or 0) for v in variants)
+            # 组内 variant 排序：mine 先，然后销量降序
+            variants.sort(key=lambda v: (not v.get("is_mine"), -(v.get("sale_count") or 0), v.get("audience_label") or ""))
+            ticket_groups.append({
+                "id": tg_id if tg_id else None,
+                "name": tg_name,
+                "variant_count": len(variants),
+                "mine_count": tg_mine,
+                "sale_total": tg_sale,
+                "min_price": min(tg_all_prices) if tg_all_prices else None,
+                "max_price": max(tg_all_prices) if tg_all_prices else None,
+                "variants": variants,
+            })
+
+        # 父票组排序：销量降序
+        ticket_groups.sort(key=lambda g: (-g["sale_total"], -g["mine_count"], g["name"]))
+
+        shelf_groups.append({
+            "id": st if st else None,
+            "name": (meta.get("shelf_type_name") or "（未分组）"),
+            "role": role,
+            "ticket_count": len(items),
+            "ticket_group_count": len(ticket_groups),
+            "mine_count": stats["mine_count"],
+            "sale_total": stats["sale_total"],
+            "min_price": stats["min_price"],
+            "avg_price": stats["avg_price"],
+            "max_price": stats["max_price"],
+            "ticket_groups": ticket_groups,
+        })
 
     # 日期范围
     if dates:
@@ -380,6 +502,7 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, days=7):
     return {
         "dates": dates,
         "tickets": tickets,
+        "shelf_groups": shelf_groups,
         "daily_summary": {"mine": mine_days, "them": them_days, "only": only_days},
         "has_vendor_data": has_vendor_data,
         "date_range": date_range,
@@ -399,6 +522,20 @@ def _heat_for(price: float, prices: list[float]) -> str:
     if ratio < 0.67:
         return "heat-mid"
     return "heat-high"
+
+
+def _longest_common_prefix(strings: list[str]) -> str:
+    """最长公共前缀。空列表或单元素返回对应处理。"""
+    strings = [s for s in strings if s]
+    if not strings:
+        return ""
+    if len(strings) == 1:
+        return strings[0]
+    s1, s2 = min(strings), max(strings)
+    for i in range(len(s1)):
+        if s1[i] != s2[i]:
+            return s1[:i]
+    return s1
 
 
 @router.get("/myfootprint", response_class=HTMLResponse)

@@ -13,6 +13,12 @@
   --heat-mid:  #E8D2A4;   /* 热力 - 中位 */
   --heat-high: #E5C0C0;   /* 热力 - 高位 */
   --font-hand: "ZCOOL XiaoWei", "Noto Serif SC", serif;
+
+  /* ── shelf 分层（账页） ── */
+  --shelf-primary-bar:    3px solid var(--seal);
+  --shelf-primary-bg:     var(--seal-soft);
+  --shelf-secondary-bar:  1px dashed var(--ink-3);
+  --shelf-secondary-bg:   var(--card-2);
 }
 
 /* 旧纸 · 详情页用更深的纸色与双层 noise */
@@ -262,18 +268,67 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   font-size: 11px; color: var(--ink-2);
   margin-top: 3px; letter-spacing: .04em;
 }
-.seal-cell.mine { background: var(--moss-soft); outline-color: var(--moss); }
-.seal-cell.mine .vendor { color: var(--moss); }
-.seal-cell.mine .price { color: var(--moss); }
-.seal-cell.them { background: var(--seal-soft); outline-color: var(--seal); }
-.seal-cell.them .vendor { color: var(--seal-deep, #8C2A0B); }
-.seal-cell.them .price { color: var(--seal-deep, #8C2A0B); }
-.seal-cell.only {
-  background: repeating-linear-gradient(135deg, var(--card) 0 8px, var(--paper-2) 8px 14px);
-  outline: 1.5px dashed var(--rule-strong);
+
+/* ── 我的供应商抢到：绿（最显眼） ── */
+.seal-cell.is-mine-cell {
+  background: var(--moss-soft);
+  outline: 2px solid var(--moss);
+  outline-offset: -1.5px;
+  box-shadow:
+    inset 0 0 0 1px var(--paper),
+    0 0 0 1px var(--moss-soft),
+    1px 2px 0 rgba(46, 60, 38, .25);
 }
-.seal-cell.only .vendor { color: var(--ink-3); }
-.seal-cell.only .price { color: var(--ink-2); }
+.seal-cell.is-mine-cell .price { color: var(--moss); }
+.seal-cell.is-mine-cell .mine-mark {
+  position: absolute; top: 1px; right: 4px;
+  font-family: var(--font-display); font-weight: 900;
+  font-size: 13px; color: var(--moss);
+  text-shadow: 0 0 2px var(--paper);
+  line-height: 1;
+}
+.seal-cell.is-mine-cell:hover {
+  outline-color: var(--moss);
+  box-shadow:
+    inset 0 0 0 1px var(--paper),
+    inset 0 0 0 3px var(--moss),
+    0 0 0 2px var(--moss-soft),
+    2px 4px 0 rgba(46, 60, 38, .3);
+}
+
+/* ── 我关注的票种被别家抢：红（警示） ── */
+.seal-cell.is-watched-them {
+  background: var(--seal-soft);
+  outline: 2px solid var(--seal);
+  outline-offset: -1.5px;
+  box-shadow:
+    inset 0 0 0 1px var(--paper),
+    1px 2px 0 rgba(140, 42, 11, .22);
+}
+.seal-cell.is-watched-them .price { color: var(--seal-deep, #8C2A0B); }
+.seal-cell.is-watched-them:hover {
+  outline-color: var(--seal);
+  box-shadow:
+    inset 0 0 0 1px var(--paper),
+    inset 0 0 0 3px var(--seal),
+    2px 4px 0 rgba(140, 42, 11, .28);
+}
+
+/* ── 有 vendor 但既不是我的也未关注：灰（噪音降饱和） ── */
+.seal-cell.is-unwatched-them {
+  background: repeating-linear-gradient(135deg, var(--card) 0 6px, var(--paper-2) 6px 12px);
+  outline: 1.5px dashed var(--rule-strong);
+  opacity: .62;
+}
+.seal-cell.is-unwatched-them .price { color: var(--ink-2); }
+.seal-cell.is-unwatched-them:hover {
+  opacity: 1;
+  background: var(--paper-2);
+  outline-style: solid;
+  outline-color: var(--ink-3);
+}
+
+/* 售罄 — 印泥戳 */
 .seal-cell.sold-out {
   background: var(--card-2); outline-color: var(--ink-3);
   opacity: .6;
@@ -290,14 +345,23 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   letter-spacing: .12em;
   opacity: .85;
 }
-.seal-cell .dot {
-  position: absolute; right: 4px; bottom: 4px;
-  width: 8px; height: 8px; border-radius: 50%;
-  border: 1px solid var(--paper);
+
+/* 缺数据 — 干净虚线 */
+.seal-cell.seal-empty {
+  background: var(--paper);
+  outline: 1.5px dashed var(--rule);
+  opacity: .5;
 }
-.seal-cell.mine .dot { background: var(--moss); }
-.seal-cell.them .dot { background: var(--seal); }
-.seal-cell.only .dot { background: var(--ink-3); }
+.seal-cell.seal-empty .price { color: var(--ink-3); font-size: var(--fs-md); margin-top: 14px; }
+.seal-cell.seal-empty:hover {
+  opacity: .85;
+  background: var(--card-2);
+}
+
+/* 旧 .dot / .vendor 样式不再渲染（保留以便兼容） */
+.seal-cell .dot { display: none; }
+.seal-cell .vendor { display: none; }
+
 .seal-cell.today { outline-width: 2.5px; }
 
 /* ── 图例 ── */
@@ -308,16 +372,28 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   display: flex; flex-wrap: wrap; gap: var(--sp-3);
   font-family: var(--font-display);
 }
-.legend .it { display: flex; align-items: center; gap: 6px; }
-.legend .swatch {
-  width: 18px; height: 18px; border-radius: 2px;
-  outline: 1px solid var(--ink);
+.legend .it { display: flex; align-items: center; gap: 8px; }
+.legend .swatch-mine,
+.legend .swatch-watched-them,
+.legend .swatch-unwatched-them {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
-.legend .swatch.mine { background: var(--moss-soft); outline-color: var(--moss); }
-.legend .swatch.them { background: var(--seal-soft); outline-color: var(--seal); }
-.legend .swatch.only {
+.legend .swatch-mine {
+  background: var(--moss-soft);
+  outline: 2px solid var(--moss);
+  box-shadow: inset 0 0 0 1px var(--paper);
+}
+.legend .swatch-watched-them {
+  background: var(--seal-soft);
+  outline: 2px solid var(--seal);
+  box-shadow: inset 0 0 0 1px var(--paper);
+}
+.legend .swatch-unwatched-them {
   background: repeating-linear-gradient(135deg, var(--card) 0 3px, var(--paper-2) 3px 6px);
-  outline: 1px dashed var(--rule-strong);
+  outline: 1.5px dashed var(--rule-strong);
 }
 
 /* ── 边注栏 ── */
@@ -447,4 +523,228 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   .daily .col:last-child { border-bottom: none; }
   .masthead-grid { flex-direction: column; }
   .masthead-grid .right { text-align: left; }
+}
+
+/* ============================================================
+   Shelf 账页分层（主 / 次）
+   ============================================================ */
+tr.shelf-band > td {
+  padding: 0 !important;
+  background: transparent;
+}
+tr.shelf-band td > .band-inner {
+  display: grid;
+  grid-template-columns: 36px 1fr auto auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 14px var(--sp-4) 14px 0;
+  margin: var(--sp-4) 0 var(--sp-2);
+  position: relative;
+  border-left: var(--shelf-secondary-bar);
+}
+
+/* 主账页 — 朱印主线 + 朱印淡背景 */
+tr.shelf-band.shelf-primary td > .band-inner {
+  background: var(--shelf-primary-bg);
+  border-left: var(--shelf-primary-bar);
+  margin-top: var(--sp-5);
+  padding: 18px var(--sp-4) 18px 0;
+}
+tr.shelf-band.shelf-primary td > .band-inner::before {
+  content: "";
+  position: absolute;
+  left: -1px; right: -1px; top: -3px; height: 3px;
+  background: var(--seal);
+  opacity: .35;
+}
+
+/* 副账页 — 灰墨虚线 + 嵌套纸 */
+tr.shelf-band.shelf-secondary td > .band-inner {
+  background: var(--shelf-secondary-bg);
+  border-left: var(--shelf-secondary-bar);
+  margin-top: var(--sp-4);
+  padding: 10px var(--sp-4) 10px 0;
+}
+
+.band-inner .role-mark {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-weight: 900;
+  font-size: var(--fs-md);
+  margin-left: -14px;
+}
+tr.shelf-band.shelf-primary .role-mark {
+  background: var(--seal);
+  color: var(--paper);
+  border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px var(--seal);
+  letter-spacing: -0.05em;
+}
+tr.shelf-band.shelf-secondary .role-mark {
+  background: transparent;
+  color: var(--ink-3);
+  border: 1px solid var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+.band-inner .band-name {
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  font-family: var(--font-display);
+  min-width: 0;
+}
+.band-inner .band-name .zh {
+  font-weight: 700;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+tr.shelf-band.shelf-primary .band-name .zh { font-size: var(--fs-xl); color: var(--ink); }
+tr.shelf-band.shelf-secondary .band-name .zh { font-size: var(--fs-md); color: var(--ink-2); font-weight: 600; }
+.band-inner .band-name .meta-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+
+.band-inner .band-stats {
+  display: flex; gap: var(--sp-3); align-items: baseline;
+  font-family: var(--font-display); font-size: var(--fs-xs);
+  color: var(--ink-3);
+  letter-spacing: .04em;
+}
+.band-inner .band-stats .stat b {
+  font-family: var(--font-mono); font-weight: 600;
+  color: var(--ink-2); margin-right: 1px;
+}
+.band-inner .band-stats .stat.mine b { color: var(--seal); }
+.band-inner .band-stats .stat.dim { color: var(--ink-3); }
+
+.band-inner .band-prices {
+  display: flex; gap: 6px; align-items: baseline;
+  font-family: var(--font-mono);
+  text-align: right;
+}
+tr.shelf-band.shelf-primary .band-prices .p-min {
+  font-size: var(--fs-xl); font-weight: 700;
+  color: var(--seal); letter-spacing: -0.02em;
+}
+tr.shelf-band.shelf-primary .band-prices .p-min em {
+  font-family: var(--font-display); font-style: normal;
+  font-size: var(--fs-xs); color: var(--ink-3);
+  font-weight: 500; margin-left: 3px;
+}
+tr.shelf-band.shelf-primary .band-prices .p-range {
+  font-size: var(--fs-sm); color: var(--ink-2);
+}
+tr.shelf-band.shelf-secondary .band-prices .p-min {
+  font-size: var(--fs-sm); color: var(--ink-2);
+}
+tr.shelf-band.shelf-secondary .band-prices .p-min em {
+  font-family: var(--font-display); font-style: normal;
+  font-size: var(--fs-xs); color: var(--ink-3);
+  margin-left: 2px;
+}
+.band-inner .band-prices .p-min.empty { color: var(--ink-3); font-size: var(--fs-sm); }
+
+/* ============================================================
+   Ticket Group 票组（二级）
+   - 单 variant 时不渲染（与 shelf 重复）
+   - 多 variant 时作为父票组账页，弱于 shelf
+   ============================================================ */
+tr.ticket-group-band > td {
+  padding: 0 !important;
+  background: transparent;
+}
+tr.ticket-group-band td > .tg-inner {
+  display: grid;
+  grid-template-columns: 32px 1fr auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 8px var(--sp-4) 8px var(--sp-5);
+  margin: var(--sp-2) 0 2px;
+  background: var(--paper-2);
+  border-left: 2px dotted var(--ink-3);
+  border-top: 1px dashed var(--rule);
+  position: relative;
+}
+tr.ticket-group-band .tg-mark {
+  width: 32px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--ink-2);
+  border: 1px solid var(--ink-3);
+  background: var(--paper);
+  margin-left: -20px;
+}
+tr.ticket-group-band .tg-name {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  font-family: var(--font-display);
+  min-width: 0;
+}
+tr.ticket-group-band .tg-name .zh {
+  font-size: var(--fs-sm); font-weight: 600;
+  color: var(--ink); letter-spacing: .02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+tr.ticket-group-band .tg-name .meta-id {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--ink-3);
+}
+tr.ticket-group-band .tg-stats {
+  display: flex; gap: var(--sp-3); align-items: baseline;
+  font-family: var(--font-display); font-size: 10px;
+  color: var(--ink-3); letter-spacing: .04em;
+}
+tr.ticket-group-band .tg-stats .stat b {
+  font-family: var(--font-mono); font-weight: 600;
+  color: var(--ink-2); margin-right: 1px;
+}
+tr.ticket-group-band .tg-stats .stat.mine { color: var(--seal); font-weight: 600; }
+tr.ticket-group-band .tg-prices {
+  display: flex; gap: 4px; align-items: baseline;
+  font-family: var(--font-mono); font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+/* ── variant 行（属于二级票组时缩进） ── */
+table.cal tr.has-parent > td:first-child {
+  padding-left: calc(var(--sp-3) + var(--sp-5));
+  position: relative;
+}
+table.cal tr.has-parent > td:first-child::before {
+  content: "└";
+  position: absolute; left: var(--sp-3); top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-3); font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+/* ============================================================
+   Vendor chip（cell 内）：per-cell 胜出 vendor 的可视标识
+   - 现改版：cell 默认只显示价格；命中我的 vendor 时整格高亮 + ★ 角标
+   - 角标 + 高亮见 .seal-cell.is-mine-cell / .mine-mark
+   - hover 详情通过原生 title 属性提供
+   ============================================================ */
+
+/* ── 副组行降饱和度（小印章 + 整行半透明） ── */
+table.cal tr.role-secondary .seal-cell {
+  width: 48px; height: 48px;
+  transform: rotate(0);
+  opacity: .82;
+}
+table.cal tr.role-secondary .seal-cell .price {
+  font-size: var(--fs-md); margin-top: 6px;
+}
+table.cal tr.role-secondary .sku-name {
+  font-size: var(--fs-sm); font-weight: 600;
+  color: var(--ink-2);
+}
+table.cal tr.role-secondary .sku-meta {
+  font-size: 11px;
+}
+table.cal tr.role-secondary td.avg .big,
+table.cal tr.role-secondary td.mine-count .big {
+  font-size: var(--fs-md); color: var(--ink-2);
 }

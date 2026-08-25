@@ -1,4 +1,4 @@
-// popup — 携程哨兵 · 采集器 (v0.2.3)
+// popup — 携程哨兵 · 采集器 (version lives in manifest.json; right-top "verText" displays it at runtime)
 // 行为：
 //   - 加载/保存 server + apiSecret
 //   - 嗅探当前 tab：
@@ -35,6 +35,13 @@ async function loadStored() {
   $("server").value    = s.server    || "https://xiecheng.19880913.xyz";
   $("apiSecret").value = s.apiSecret || "";
 }
+
+// 版本号从 manifest 拿，避免 HTML 写死永远落后
+try {
+  const v = chrome.runtime.getManifest().version;
+  const el = document.getElementById("verText");
+  if (el) el.textContent = "v" + v;
+} catch (_) {}
 
 async function save() {
   const v = {
@@ -75,7 +82,7 @@ function renderPoi(tab, poi) {
   const panel = $("poiPanel");
   panel.className = "poi-panel";
   panel.innerHTML = `
-    <h3 class="poi-name">${escapeHtml(poi.name || "(未命名 POI)")}</h3>
+    <h3 class="poi-name">${escapeHtml(poi.name || `viewId #${poi.viewid}（页面还在加载名字…）`)}</h3>
     <div class="poi-meta">
       <span class="id">viewId #${poi.viewid}</span>
       <span class="dot">·</span>
@@ -110,7 +117,7 @@ function renderPoi(tab, poi) {
       return { kind: "err", html: "URL 里没有 viewId" };
     }
     if (r && r.reason === "no_requests") {
-      return { kind: "err", html: "这次没拦截到 soa2 请求（页面刚打开？）— 点「再抓一轮」" };
+      return { kind: "err", html: "没拦截到 soa2 请求（页面还在加载 / fetch 已被覆盖？）— 刷新页面或点「再抓一轮」" };
     }
     if (r && r.status === 401) {
       return { kind: "err", html: "上传 401 auth 失败 — 检查 popup 里 API Secret 是否与 /admin/api-secret 一致" };
@@ -124,17 +131,7 @@ function renderPoi(tab, poi) {
 
   $("captureBtn").addEventListener("click", async () => {
     $("captureBtn").disabled = true;
-    setPoiStatus("run", "抓取中…（等待 1.5s）");
-    try {
-      const r = await chrome.tabs.sendMessage(tab.id, { cmd: "capture_now" });
-      if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
-      const d = describeCaptureResult(r);
-      setPoiStatus(d.kind, d.html);
-    } catch (e) {
-      setPoiStatus("err", describeSendError(e));
-    } finally {
-      $("captureBtn").disabled = false;
-    }
+    runWithProgress(tab, "再抓一轮中…");
   });
 
   $("syncPoiBtn").addEventListener("click", async () => {
@@ -166,20 +163,76 @@ function setPoiStatus(kind, html) {
 }
 
 async function autoCapture(tab) {
-  setPoiStatus("run", "初次嗅探抓取中…（等待 1.5s）");
+  await runWithProgress(tab, "初次嗅探抓取中…");
+}
+
+// 把 sendMessage 包成"会报进度的版本" — 后端最长要等 22s，老版本 popup 卡在
+// "抓取中…" 看不到任何动静，用户以为死了。这里每 1s 更新一次状态显示已等多久，
+// 每 500ms 拉一次 get_progress 展示每个 expected endpoint 的状态。
+async function runWithProgress(tab, label) {
+  const startedAt = Date.now();
+  let timer = null;
+  let pollTimer = null;
+  let lastRenderedHtml = "";
+
+  const render = async () => {
+    const sec = Math.floor((Date.now() - startedAt) / 1000);
+    let html = `${label}（已等 ${sec}s）`;
+    try {
+      const r = await chrome.tabs.sendMessage(tab.id, { cmd: "get_progress" });
+      if (r?.ok && r.progress && Array.isArray(r.progress.targets)) {
+        const { targets, completed, pending, error, missing } = r.progress;
+        html += ` · <span class="count">${completed}</span>/${targets.length} 已完成`;
+        if (pending) html += ` · ${pending} 在-flight`;
+        if (error)    html += ` · <span class="err">${error} 失败</span>`;
+        // 主动 fire 进度：phase=running/done/idle/skipped，fired/total 让用户看到「我在自己抓」不是干等
+        if (r.proactive && (r.proactive.phase === "running" || r.proactive.phase === "done")) {
+          const p = r.proactive;
+          const pct = p.total ? ` ${p.fired}/${p.total}` : "";
+          const errs = p.errors ? ` · <span class="err">${p.errors} 失败</span>` : "";
+          html += ` · <span style="color:var(--amber)">主动 fire ${p.phase === "done" ? "✓" : "…"}${pct}${errs}</span>`;
+        }
+        html += "<br>";
+        // 列表里：✓绿色 / ◌黄色 pending / ✗红色 error / ·灰色 missing
+        for (const t of targets) {
+          const name = t.path.split("/").pop();
+          if (t.state === "completed") {
+            html += `<div class="t-done">✓ ${escapeHtml(name)} <span class="mute">HTTP ${t.status || 200}</span></div>`;
+          } else if (t.state === "pending") {
+            html += `<div class="t-pend">◌ ${escapeHtml(name)} <span class="mute">在-flight</span></div>`;
+          } else if (t.state === "error") {
+            html += `<div class="t-err">✗ ${escapeHtml(name)} <span class="mute">HTTP ${t.status || "?"}</span></div>`;
+          } else {
+            html += `<div class="t-miss">· ${escapeHtml(name)} <span class="mute">等发起</span></div>`;
+          }
+        }
+      }
+    } catch (_) {
+      // popup 的 tabs.sendMessage 在 content script 重新注入时会 reject；忽略
+    }
+    if (html !== lastRenderedHtml) {
+      lastRenderedHtml = html;
+      setPoiStatus("run", html);
+    }
+  };
+
+  render();
+  timer = setInterval(() => { render(); }, 500);
+  console.log("[ctrip-sentry:popup] capture_now → content.js");
   try {
     const r = await chrome.tabs.sendMessage(tab.id, { cmd: "capture_now" });
-    if (r?.ok) {
-      setPoiStatus("ok", `已上传 · HTTP ${r.status} · <span class="count">${r.requests ?? 0}</span> 条请求`);
-    } else if (r?.reason === "no_poi_in_url") {
-      setPoiStatus("err", "URL 里没有 viewId");
-    } else if (r?.reason === "no_requests") {
-      setPoiStatus("err", "这次没拦截到 soa2 请求（页面刚打开？）— 点「再抓一轮」");
-    } else {
-      setPoiStatus("err", `失败：${r?.error || "未注入"}`);
-    }
+    console.log("[ctrip-sentry:popup] capture_now ← result", r);
+    if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
+    const d = describeCaptureResult(r);
+    setPoiStatus(d.kind, d.html);
   } catch (e) {
-    setPoiStatus("err", "未注入 content script（请刷新一次页面）");
+    console.warn("[ctrip-sentry:popup] capture_now error", e);
+    setPoiStatus("err", describeSendError(e));
+  } finally {
+    clearInterval(timer);
+    clearInterval(pollTimer);
+    const btn = document.getElementById("captureBtn");
+    if (btn) btn.disabled = false;
   }
 }
 

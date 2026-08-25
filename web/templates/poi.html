@@ -153,58 +153,141 @@
           </tr>
         </thead>
         <tbody>
-          {% for t in matrix.tickets %}
-            <tr>
-              <td>
-                <div class="sku-name">{{ t.name }}</div>
-                <div class="sku-meta">
-                  vendor {{ t.primary_vendor_id }}
-                  {% if t.is_mine %}<span class="my-tag">★ 我的</span>{% endif %}
-                  {% if t.sale_count %}<br>累计销 {{ '{:,}'.format(t.sale_count) }}{% endif %}
+          {% for sg in matrix.shelf_groups %}
+            <!-- ── shelf 账页头（一级：货架） ── -->
+            <tr class="shelf-band shelf-{{ sg.role }}">
+              <td colspan="{{ matrix.dates|length + 3 }}">
+                <div class="band-inner">
+                  <div class="role-mark">{{ '主' if sg.role == 'primary' else '次' }}</div>
+                  <div class="band-name">
+                    <span class="zh">{{ sg.name }}</span>
+                    <span class="meta-id">shelf #{{ sg.id if sg.id else '—' }}</span>
+                  </div>
+                  <div class="band-stats">
+                    {% if sg.mine_count %}<span class="stat mine"><b>{{ sg.mine_count }}</b>张我的</span>{% endif %}
+                    <span class="stat"><b>{{ sg.ticket_group_count }}</b>组 · <b>{{ sg.ticket_count }}</b>票</span>
+                    {% if sg.sale_total %}<span class="stat dim">累销 {{ '{:,}'.format(sg.sale_total) }}</span>{% endif %}
+                  </div>
+                  <div class="band-prices">
+                    {% if sg.min_price %}
+                      <span class="p-min">¥{{ '%.0f'|format(sg.min_price) }}<em>起</em></span>
+                      {% if sg.max_price and sg.max_price != sg.min_price %}
+                        <span class="p-range">→ ¥{{ '%.0f'|format(sg.max_price) }}</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="p-min empty">无报价</span>
+                    {% endif %}
+                  </div>
+                  {% if sg.role == 'primary' %}
+                    <div class="band-rule"></div>
+                  {% endif %}
                 </div>
               </td>
-              {% for d in matrix.dates %}
-                {% set cell = t.cells[loop.index0] if t.cells|length > loop.index0 else None %}
-                {% set has_vendor = cell and cell.winning_vendor_id %}
-                {% set state = cell.state if cell else 'empty' %}
-                {% set heat = cell.heat if cell else 'heat-mid' %}
-                {% set today_cls = ' today' if d.is_today else '' %}
-                {% set state_cls = ' ' + state if state else '' %}
-                <td>
-                  {% if cell and cell.sale_price %}
-                    <div class="seal-cell{{ state_cls }}{{ today_cls }} {{ heat }}"
-                         title="{% if has_vendor %}{{ cell.winning_vendor_name }} · ¥{{ '%.0f'|format(cell.sale_price) }} · {{ d.iso }}{% else %}¥{{ '%.0f'|format(cell.sale_price) }} · {{ d.iso }}{% endif %}">
-                      <div class="price">¥{{ '%.0f'|format(cell.sale_price) }}</div>
-                      <div class="vendor">{{ cell.vendor_label or '—' }}</div>
-                      <div class="dot"></div>
-                    </div>
-                  {% else %}
-                    <div class="seal-cell only{{ today_cls }} {{ heat }}" title="无数据 · {{ d.iso }}">
-                      <div class="price">—</div>
-                      <div class="vendor">缺</div>
-                    </div>
-                  {% endif %}
-                </td>
-              {% endfor %}
-              <td class="avg">
-                <span class="lbl">均价</span>
-                <span class="big">¥{{ '%.1f'|format(t.avg_7) if t.avg_7 else '—' }}</span>
-              </td>
-              <td class="mine-count">
-                <span class="lbl">{{ '我的' if t.mine_state == 'mixed' else ('独占' if t.mine_state == 'only' else '—') }}</span>
-                <span class="big {% if t.mine_state == 'mixed' and t.mine_ratio >= 0.5 %}mine-good{% elif t.mine_state == 'mixed' and t.mine_ratio < 0.5 %}mine-bad{% endif %}">
-                  {{ t.mine_label }}
-                </span>
-              </td>
             </tr>
+            {% for tg in sg.ticket_groups %}
+              <!-- ── 票组（二级：父票组，含人群变体） ── -->
+              {% if tg.variant_count > 1 %}
+              <tr class="ticket-group-band">
+                <td colspan="{{ matrix.dates|length + 3 }}">
+                  <div class="tg-inner">
+                    <div class="tg-mark">票组</div>
+                    <div class="tg-name">
+                      <span class="zh">{{ tg.name }}</span>
+                      <span class="meta-id">group #{{ tg.id if tg.id else '—' }}</span>
+                    </div>
+                    <div class="tg-stats">
+                      <span class="stat"><b>{{ tg.variant_count }}</b>人群</span>
+                      {% if tg.mine_count %}<span class="stat mine">★{{ tg.mine_count }}张我的</span>{% endif %}
+                    </div>
+                    <div class="tg-prices">
+                      {% if tg.min_price %}
+                        <span class="p-min">¥{{ '%.0f'|format(tg.min_price) }}</span>
+                        {% if tg.max_price and tg.max_price != tg.min_price %}
+                          <span class="p-range">→ ¥{{ '%.0f'|format(tg.max_price) }}</span>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              {% endif %}
+              {% for t in tg.variants %}
+                <tr class="role-{{ sg.role }} {% if tg.variant_count > 1 %}has-parent{% endif %}">
+                  <td>
+                    {% if tg.variant_count > 1 %}
+                      <div class="sku-name">{{ t.audience_label or t.name }}</div>
+                    {% else %}
+                      <div class="sku-name">{{ t.name }}</div>
+                    {% endif %}
+                    <div class="sku-meta">
+                      {% if t.is_mine %}<span class="my-tag">★ 我的</span>{% else %}rid {{ t.resource_id }}{% endif %}
+                      {% if t.sale_count %} · 销 {{ '{:,}'.format(t.sale_count) }}{% endif %}
+                    </div>
+                  </td>
+                  {% for d in matrix.dates %}
+                    {% set cell = t.cells[loop.index0] if t.cells|length > loop.index0 else None %}
+                    {% set v_id = cell.winning_vendor_id if cell else None %}
+                    {% set v_name = cell.winning_vendor_name if cell else None %}
+                    {% set sp = cell.sale_price if cell else None %}
+                    {% set heat = cell.heat if cell else 'heat-mid' %}
+                    {% set is_sold_out = cell and cell.state == 'sold-out' %}
+                    {% set has_vid = v_id is not none %}
+                    {% set is_mine = has_vid and (v_id in my_vids) %}
+                    {% set is_watched_shelf = t.shelf_type_id is not none and (t.shelf_type_id in watched) %}
+                    {% if sp and is_mine %}
+                      {% set cell_kind = 'is-mine-cell' %}
+                    {% elif sp and has_vid and is_watched_shelf %}
+                      {% set cell_kind = 'is-watched-them' %}
+                    {% elif sp and has_vid %}
+                      {% set cell_kind = 'is-unwatched-them' %}
+                    {% else %}
+                      {% set cell_kind = 'seal-empty' %}
+                    {% endif %}
+                    {% set today_cls = ' today' if d.is_today else '' %}
+                    <td>
+                      {% if sp %}
+                        {% if is_mine %}
+                          {% set title = (v_name or 'vendor') ~ ' · vid ' ~ v_id ~ ' · ¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso ~ ' · ★ 我的供应商' %}
+                        {% elif has_vid %}
+                          {% set title = (v_name or 'vendor') ~ ' · vid ' ~ v_id ~ ' · ¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso ~ (' · 我关注的票种被抢' if is_watched_shelf else '') %}
+                        {% else %}
+                          {% set title = '¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso %}
+                        {% endif %}
+                        <div class="seal-cell {{ heat }}{{ today_cls }} {{ cell_kind }}{% if is_sold_out %} sold-out{% endif %}"
+                             title="{{ title }}">
+                          <div class="price">¥{{ '%.0f'|format(sp) }}</div>
+                          {% if is_mine %}
+                            <span class="mine-mark" aria-label="我的供应商">★</span>
+                          {% endif %}
+                        </div>
+                      {% else %}
+                        <div class="seal-cell seal-empty{{ today_cls }}" title="无数据 · {{ d.iso }}">
+                          <div class="price">—</div>
+                        </div>
+                      {% endif %}
+                    </td>
+                  {% endfor %}
+                  <td class="avg">
+                    <span class="lbl">均价</span>
+                    <span class="big">¥{{ '%.1f'|format(t.avg_7) if t.avg_7 else '—' }}</span>
+                  </td>
+                  <td class="mine-count">
+                    <span class="lbl">{{ '我的' if t.mine_state == 'mixed' else ('独占' if t.mine_state == 'only' else '—') }}</span>
+                    <span class="big {% if t.mine_state == 'mixed' and t.mine_ratio >= 0.5 %}mine-good{% elif t.mine_state == 'mixed' and t.mine_ratio < 0.5 %}mine-bad{% endif %}">
+                      {{ t.mine_label }}
+                    </span>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% endfor %}
           {% endfor %}
         </tbody>
       </table>
 
       <div class="legend">
-        <div class="it"><span class="swatch mine"></span>我的（最低价来自自营/我的供应商）</div>
-        <div class="it"><span class="swatch them"></span>他营（被别家抢走）</div>
-        <div class="it"><span class="swatch only"></span>独占/缺数据（无竞争基准）</div>
+        <div class="it"><span class="swatch-mine"></span>绿 = 该日最低价由我启用的 vendor 提供（★）</div>
+        <div class="it"><span class="swatch-watched-them"></span>红 = 我关注的票种被别家抢走</div>
+        <div class="it"><span class="swatch-unwatched-them"></span>灰 = 有 vendor 数据但既非我的也未关注</div>
         <div class="it" style="margin-left:auto">
           {% if not has_vendor_data %}
             <span style="color:var(--amber); font-weight:600">⚠ 当前价格无 vendor 来源</span>

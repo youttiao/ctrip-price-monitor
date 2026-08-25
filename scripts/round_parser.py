@@ -184,6 +184,14 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         WHERE id=?
     """, (datetime.now(timezone.utc).isoformat(),
           len(parsed["skus"]), inserted, round_pk))
+
+    # 6.5) pois.last_round_id + last_status → admin UI reflects reality
+    conn.execute("""
+        UPDATE pois SET last_round_id=?, last_status=?, last_error=NULL, updated_at=?
+        WHERE viewid=?
+    """, (round_pk, "parsed",
+          datetime.now(timezone.utc).isoformat(), poi_viewid))
+
     conn.commit()
     return len(parsed["skus"])
 
@@ -218,6 +226,11 @@ def main():
                 "UPDATE rounds SET status='error', error_msg=? WHERE id=?",
                 (str(e)[:500], r["id"])
             )
+            conn.execute("""
+                UPDATE pois SET last_status=?, last_error=?, updated_at=?
+                WHERE viewid=?
+            """, ("error", str(e)[:500],
+                  datetime.now(timezone.utc).isoformat(), r["poi_viewid"]))
             conn.commit()
 
 

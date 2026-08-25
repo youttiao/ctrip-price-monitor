@@ -11,21 +11,54 @@
 // chrome.runtime 的依赖。
 
 (function () {
-  const SENTINEL = "[ctrip-sentry:capture-main:v0.2.14]";
+  const SENTINEL = "[ctrip-sentry:capture-main:v0.2.19]";
   if (window.__ctrip_sentry_capture_main_installed) return;
   window.__ctrip_sentry_capture_main_installed = true;
 
   console.log(SENTINEL, "loading on", location.href);
 
-  function detectPOIFromURL() {
+  function urlViewid() {
     try {
       const u = new URL(location.href);
       const q = u.searchParams.get("viewId");
-      if (q && /^\d+$/.test(q)) return { viewid: +q, name: document.title || "", source: "query" };
+      if (q && /^\d+$/.test(q)) return +q;
       const m = (u.pathname + u.search).match(/\/(\d{2,6})/);
-      if (m) return { viewid: +m[1], name: document.title || "", source: "path" };
+      if (m) return +m[1];
     } catch (_) {}
     return null;
+  }
+  // 同 content.js：多源兜底取 POI 名。SPA 详情页 document.title 经常是模板名或空。
+  function extractPOIName() {
+    const candidates = [];
+    try {
+      const t = document.title && document.title.trim();
+      if (t) candidates.push(t);
+    } catch (_) {}
+    try {
+      const og = document.querySelector('meta[property="og:title"]');
+      if (og && og.content) candidates.push(og.content.trim());
+    } catch (_) {}
+    try {
+      const h1 = document.querySelector("h1");
+      if (h1 && h1.textContent) candidates.push(h1.textContent.trim());
+    } catch (_) {}
+    const blacklist = /^(携程旅行|ctrip|c trip|trip\.com)/i;
+    for (const raw of candidates) {
+      const s = String(raw)
+        .replace(/\s*[|_｜-]\s*(携程|c trip|trip\.com).*$/i, "")
+        .replace(/^【.*?】/, "")
+        .trim();
+      if (!s) continue;
+      if (blacklist.test(s)) continue;
+      if (s.length > 40) continue;
+      return s;
+    }
+    return "";
+  }
+  function detectPOIFromURL() {
+    const viewid = urlViewid();
+    if (!viewid) return null;
+    return { viewid, name: extractPOIName(), source: "url" };
   }
 
   // 等 inflight 累计数稳定 1.5s（最多 22s）—— 与 isolated 同步策略一致
@@ -76,14 +109,24 @@
       const poi = detectPOIFromURL();
       if (!poi) return { ok: false, reason: "no_poi_in_url" };
 
-      // 1) 先用现成的 inflight 数据试一次
+      // 1) 等 SPA 首屏 fetch 落到 buffer（最多 22s）
+      const w = await waitForRequestsStable(22000);
+      console.log(SENTINEL, "waitForRequestsStable result", w);
       let reqs = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
-      if (!reqs.length) {
-        // 2) 还没有数据：等 SPA 首屏 fetch 落到 buffer（最多 22s）
-        const w = await waitForRequestsStable(22000);
-        console.log(SENTINEL, "waitForRequestsStable result", w);
-        reqs = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
+
+      // 2) 主动 fire overview + resourceAddInfo × N（与 popup 路径完全一致）
+      //    这样 server 推任务过来时也是完整数据，不需要用户手动点 SKU
+      let proactive = null;
+      if (window.__ctrip_sentry_proactive_fire) {
+        try {
+          proactive = await window.__ctrip_sentry_proactive_fire(poi.viewid);
+          console.log(SENTINEL, "proactive fire result", proactive);
+        } catch (e) {
+          console.warn(SENTINEL, "proactive fire threw", e);
+        }
       }
+      reqs = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
+
       if (!reqs.length) return { ok: false, reason: "no_requests" };
 
       const payload = {
@@ -91,6 +134,7 @@
         poi: { viewid: poi.viewid, name: poi.name },
         pageUrl: location.href,
         requests: reqs,
+        proactive: proactive || undefined,
       };
 
       const uploadResult = await uploadDirect(payload, server, apiSecret, extVer);
@@ -101,6 +145,7 @@
         requests: reqs.length,
         body: uploadResult.body,
         error: uploadResult.error,
+        proactive,
       };
     } catch (e) {
       console.error(SENTINEL, "capture_now threw", e);

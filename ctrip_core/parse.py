@@ -222,12 +222,58 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
 # ── priceCalendar 解析：(rid, date) → {price, inventory, available} ──
 
 def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
+    """从 getProductPriceCalendar 响应构建每日价行。
+
+    响应结构（实测 data/sample_price_calendar.json）：
+    {
+      "data": {
+        "priceAndStockInfos": [
+          {
+            "date": "2026-08-25",
+            "minPrice": 39,                       # daily min across packages
+            "packagePriceAndStockInfos": [
+              {
+                "packageId": 54434100,
+                "minPrice": 39,                   # package-level min
+                "resourcePriceAndStockInfos": [
+                  {
+                    "resourceId": 54434101,
+                    "salePrice": 39,              # 实际售价
+                    "price": 39,                  # 与 salePrice 一致（每日挂牌价）
+                    "marketPrice": 60.0,          # 门市价/原价
+                    "inventoryNum": 100,          # 库存
+                    "available": true,            # 当日是否可售
+                    "discount": 0.35              # 折扣率
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+    输出每个 resourcePriceAndStockInfos 一行：
+      resource_id, sale_date, package_id 来自所在层
+      sale_price  ← salePrice (实价)
+      min_price   ← None  (留 None；daily minPrice 在 day 层，未下沉到每行，
+                          如需可由 dashboard 端聚合 day.minPrice)
+      inventory   ← inventoryNum
+      available   ← bool(available)
+      market_price ← marketPrice (新增)
+      discount     ← discount    (新增)
+      raw          ← 整个 resource obj (含 marketPrice/discount 等所有字段)
+    """
     out = []
     for b in bodies:
         if not b:
             continue
         data = b.get("data") or {}
-        for day in data.get("priceAndStockInfos", []) or []:
+        # 兼容旧 shape：priceAndStockInfos 不存在时静默返回空，不崩。
+        days = data.get("priceAndStockInfos")
+        if not days:
+            continue
+        for day in days:
             sale_date = day.get("date")
             for pkg in day.get("packagePriceAndStockInfos", []) or []:
                 package_id = pkg.get("packageId")
@@ -235,11 +281,13 @@ def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
                     out.append({
                         "resource_id": r.get("resourceId"),
                         "sale_date": sale_date,
-                        "min_price": r.get("salePrice"),
-                        "sale_price": r.get("price"),
+                        "min_price": None,
+                        "sale_price": r.get("salePrice"),
                         "inventory": r.get("inventoryNum"),
                         "available": bool(r.get("available")),
                         "package_id": package_id,
+                        "market_price": r.get("marketPrice"),
+                        "discount": r.get("discount"),
                         "raw": r,
                     })
     return out

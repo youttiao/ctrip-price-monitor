@@ -8,21 +8,71 @@
 //   4. SPA URL change 时清 inflight。
 
 (function () {
-  const SENTINEL = "[ctrip-sentry:isolated:v0.2.5]";
+  const SENTINEL = "[ctrip-sentry:isolated:v0.2.20]";
   console.log(SENTINEL, "loading on", location.href);
-  try { document.documentElement.setAttribute("data-ctrip-sentry", "v0.2.3-3"); } catch (_) {}
+  try { document.documentElement.setAttribute("data-ctrip-sentry", "v0.2.20"); } catch (_) {}
 
-  function detectPOIFromURL() {
+  function urlViewid() {
     try {
       const u = new URL(location.href);
       const q = u.searchParams.get("viewId");
-      if (q && /^\d+$/.test(q)) return { viewid: +q, name: document.title || "", source: "query" };
+      if (q && /^\d+$/.test(q)) return +q;
       const m = (u.pathname + u.search).match(/\/(\d{2,6})/);
-      if (m) return { viewid: +m[1], name: document.title || "", source: "path" };
+      if (m) return +m[1];
     } catch (_) {}
     return null;
   }
-  let currentPOI = detectPOIFromURL();
+  // 多源兜底取 POI 名。document.title 在 document_start 时为空（H5 SPA 后续才 set），
+  // 老逻辑把它直接缓存进 currentPOI，于是 popup 永远拿不到名字。这里每次都重新拉一遍：
+  //   1) document.title (SPA 加载完后通常已经设好)
+  //   2) og:title meta (详情页 SEO 标签)
+  //   3) h1 / 常见 class (兜底)
+  // 过滤"携程旅行"/"ctrip"等无意义模板名。
+  function extractPOIName() {
+    const candidates = [];
+    try {
+      const t = document.title && document.title.trim();
+      if (t) candidates.push(t);
+    } catch (_) {}
+    try {
+      const og = document.querySelector('meta[property="og:title"]');
+      if (og && og.content) candidates.push(og.content.trim());
+    } catch (_) {}
+    try {
+      const tw = document.querySelector('meta[name="twitter:title"]');
+      if (tw && tw.content) candidates.push(tw.content.trim());
+    } catch (_) {}
+    try {
+      const h1 = document.querySelector("h1");
+      if (h1 && h1.textContent) candidates.push(h1.textContent.trim());
+    } catch (_) {}
+    try {
+      for (const sel of [".sight_name", ".poi-name", ".detail-name", ".scenic-name"]) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent) candidates.push(el.textContent.trim());
+        if (candidates.length >= 3) break;
+      }
+    } catch (_) {}
+    const blacklist = /^(携程旅行|ctrip|c trip|trip\.com)/i;
+    for (const raw of candidates) {
+      const s = String(raw)
+        .replace(/\s*[|_｜-]\s*(携程|c trip|trip\.com).*$/i, "")
+        .replace(/^【.*?】/, "")
+        .trim();
+      if (!s) continue;
+      if (blacklist.test(s)) continue;
+      if (s.length > 40) continue;
+      return s;
+    }
+    return "";
+  }
+  function detectPOIFromURL() {
+    const viewid = urlViewid();
+    if (!viewid) return null;
+    return { viewid, name: extractPOIName(), source: "url" };
+  }
+  // currentPOI 只缓存 viewid（URL-derived，不会过期）；name 永远走 extractPOIName 实时算
+  let currentPOI = urlViewid() ? { viewid: urlViewid(), name: extractPOIName(), source: "url" } : null;
 
   // ---- 接 main world postMessage ----
   window.addEventListener("message", (ev) => {
@@ -50,12 +100,21 @@
     let lastCount = -1;
     let stableTicks = 0;
     const deadline = Date.now() + maxMs;
+    let lastLoggedSec = -1;
     while (Date.now() < deadline) {
       const st = (window.__ctrip_sentry_status && window.__ctrip_sentry_status()) || null;
       const have = (window.__ctrip_sentry_get_inflight && (window.__ctrip_sentry_get_inflight() || []).length) || 0;
       if (st && have > 0) {
         if (have === lastCount) stableTicks++; else { stableTicks = 0; lastCount = have; }
         if (stableTicks >= 6) return { waitedMs: Date.now() - (deadline - maxMs), lastCount };
+      }
+      // 每 5s 打印一次中间状态：等多久 / 总 inflight / pending / completed / 等的 targets
+      const sec = Math.floor((deadline - Date.now()) / 1000);
+      if (sec !== lastLoggedSec && sec % 5 === 0) {
+        lastLoggedSec = sec;
+        const prog = (window.__ctrip_sentry_get_progress && window.__ctrip_sentry_get_progress()) || null;
+        console.log(SENTINEL, `wait ${maxMs/1000 - sec}s elapsed · inflight=${st?.inflight ?? '?'} pending=${st?.pending ?? '?'} completed=${have}`,
+          prog ? `targets=[${prog.targets.map(t => `${t.key.split('/').pop()}:${t.state[0]}`).join(', ')}]` : "");
       }
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -66,20 +125,40 @@
   async function doCapture() {
     if (!location.host.includes("ctrip.com")) return { ok: false, reason: "not_ctrip" };
 
-    // 给 main world 时间收完正在飞的请求
+    // Phase 1: 给 main world 时间收完正在飞的页面自然请求（详情页首屏 ≈5–10s）
     await waitForRequestsStable(22000);
+    const naturalCount = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight().length) || 0;
+    console.log(SENTINEL, "natural wait done, completed=", naturalCount);
 
-    currentPOI = detectPOIFromURL();
-    if (!currentPOI) return { ok: false, reason: "no_poi_in_url" };
+    const viewid = currentPOI?.viewid || urlViewid();
+    if (!viewid) return { ok: false, reason: "no_poi_in_url" };
 
+    // Phase 2: 主动 fire overview + resourceAddInfo × N（页面 SPA 不会主动发，
+    //          否则只有 shelf → parser 走 fallback，vendorId 全是 0）
+    let proactive = null;
+    if (window.__ctrip_sentry_proactive_fire) {
+      try {
+        proactive = await window.__ctrip_sentry_proactive_fire(viewid);
+        console.log(SENTINEL, "proactive fire result", proactive);
+      } catch (e) {
+        console.warn(SENTINEL, "proactive fire threw", e);
+      }
+    } else {
+      console.warn(SENTINEL, "proactive fire not available (main world not injected?)");
+    }
+
+    // Phase 3: 收集所有 inflight（自然 + 主动），组装 payload 上传
     const reqs = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
+    console.log(SENTINEL, "uploading round, requests=", reqs.length,
+      "natural=", naturalCount, "proactive=", proactive?.fired, "name=", extractPOIName());
     if (!reqs.length) return { ok: false, reason: "no_requests" };
 
     const payload = {
       capturedAt: new Date().toISOString(),
-      poi: { viewid: currentPOI.viewid, name: currentPOI.name },
+      poi: { viewid, name: extractPOIName() },
       pageUrl: location.href,
       requests: reqs,
+      proactive: proactive || undefined,
     };
 
     try {
@@ -115,8 +194,10 @@
       return true;
     }
     if (msg?.cmd === "get_poi") {
-      const poi = currentPOI || detectPOIFromURL();
-      sendResponse(poi || null);
+      // 永远现算 name（document.title 在 SPA 加载完后才有；老逻辑的 cached currentPOI.name 一直为空）
+      const viewid = currentPOI?.viewid || urlViewid();
+      if (!viewid) { sendResponse(null); return false; }
+      sendResponse({ viewid, name: extractPOIName(), source: currentPOI?.source || "url" });
       return false;
     }
     if (msg?.cmd === "diagnose") {
@@ -140,6 +221,20 @@
       sendResponse({ ok: true });
       return false;
     }
+    if (msg?.cmd === "get_progress") {
+      // 给 popup 实时进度面板用：从 MAIN world 的 inflight 算每个 endpoint 当前状态
+      // pending / completed / error / missing（expected 但还没发起的）
+      // 顺便把主动 fire 的 phase / fired / errors / total 也带回去，popup 显示出来
+      try {
+        const prog = (window.__ctrip_sentry_get_progress && window.__ctrip_sentry_get_progress()) || null;
+        const st = (window.__ctrip_sentry_status && window.__ctrip_sentry_status()) || null;
+        const proactive = (window.__ctrip_sentry_proactive_state && window.__ctrip_sentry_proactive_state()) || null;
+        sendResponse({ ok: true, progress: prog, status: st, proactive });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+      return false;
+    }
   });
 
   // SPA URL 切换清空缓存
@@ -148,7 +243,8 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       try { window.__ctrip_sentry_clear_inflight && window.__ctrip_sentry_clear_inflight(); } catch (_) {}
-      currentPOI = detectPOIFromURL();
+      const v = urlViewid();
+      currentPOI = v ? { viewid: v, name: extractPOIName(), source: "url" } : null;
     }
   }, 1500);
 
