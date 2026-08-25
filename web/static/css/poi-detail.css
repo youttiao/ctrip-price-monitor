@@ -298,14 +298,14 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
 
 /* ── 我关注的票种被别家抢：红（警示） ── */
 .seal-cell.is-watched-them {
-  background: var(--seal-soft);
+  background: rgba(194, 65, 12, .14);
   outline: 2px solid var(--seal);
   outline-offset: -1.5px;
   box-shadow:
     inset 0 0 0 1px var(--paper),
     1px 2px 0 rgba(140, 42, 11, .22);
 }
-.seal-cell.is-watched-them .price { color: var(--seal-deep, #8C2A0B); }
+.seal-cell.is-watched-them .price { color: var(--seal); font-weight: 600; }
 .seal-cell.is-watched-them:hover {
   outline-color: var(--seal);
   box-shadow:
@@ -387,7 +387,7 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   box-shadow: inset 0 0 0 1px var(--paper);
 }
 .legend .swatch-watched-them {
-  background: var(--seal-soft);
+  background: rgba(194, 65, 12, .14);
   outline: 2px solid var(--seal);
   box-shadow: inset 0 0 0 1px var(--paper);
 }
