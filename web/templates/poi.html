@@ -395,10 +395,14 @@
     activeCell = cell;
 
     const d = parseData(cell);
+    d.visualKind = cell.classList.contains('is-mine-cell') ? 'mine'
+                 : cell.classList.contains('is-watched-them') ? 'watched'
+                 : cell.classList.contains('is-unwatched-them') ? 'unwatched'
+                 : 'empty';
     tip.innerHTML = '';
     tip.appendChild(arrow);
     tip.insertAdjacentHTML('beforeend', renderTip(d));
-    tip.className = 'sentry-tip ' + stateClass(d);
+    tip.className = 'sentry-tip ' + stateClassFromCell(cell);
 
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
@@ -442,7 +446,16 @@
     arrow.style.left = (clamped - 6) + 'px';
   }
 
+  function stateClassFromCell(cell) {
+    // 直接读 cell DOM class（与 cell 视觉 100% 对齐）
+    if (cell.classList.contains('seal-empty')) return 'is-empty';
+    if (cell.classList.contains('is-mine-cell')) return 'is-mine';
+    if (cell.classList.contains('is-watched-them')) return 'is-watched-them';
+    return 'is-unwatched-them';
+  }
+
   function stateClass(d) {
+    // 兼容旧调用：用 data-state 推断
     if (d.isEmpty) return 'is-empty';
     if (d.state === 'mine') return 'is-mine';
     if (d.state === 'them') return 'is-watched-them';
@@ -466,6 +479,9 @@
   }
 
   function renderTip(d) {
+    const visual = d.visualKind || (d.state === 'mine' ? 'mine'
+                       : d.state === 'them' ? 'watched' : 'unwatched');
+
     if (d.isEmpty) {
       return `
         <div class="tip-hdr"><span class="glyph"></span>哨记 · ${esc(d.date)}</div>
@@ -478,9 +494,9 @@
       ? `<div class="tip-brand">${esc(d.vendorBrand)}</div>` : '';
 
     let badge = '';
-    if (d.state === 'mine') {
+    if (visual === 'mine') {
       badge = '<span class="tip-badge" style="color:var(--moss)">★ 我的供应商</span>';
-    } else if (d.state === 'them') {
+    } else if (visual === 'watched') {
       badge = '<span class="tip-badge" style="color:var(--seal)">⚑ 关注票种</span>';
     } else {
       badge = '<span class="tip-badge" style="color:var(--ink-3)">○ 单家报价</span>';
