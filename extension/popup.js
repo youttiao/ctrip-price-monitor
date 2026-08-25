@@ -89,6 +89,19 @@ function renderPoi(tab, poi) {
       <span>${escapeHtml(host)}</span>
     </div>
     <div class="poi-status run" id="poiStatus">初次嗅探抓取中…</div>
+    <div class="stream" id="streamLog" hidden>
+      <div class="stream-ticker">
+        <span class="pulse idle" id="streamPulse"></span>
+        <span class="label" id="streamLabel">TAPE</span>
+        <span class="sep">·</span>
+        <span><span class="cnt" id="streamFired">0</span>/<span class="cnt" id="streamTotal">0</span></span>
+        <span class="sep">·</span>
+        <span class="elap" id="streamElap">0s</span>
+      </div>
+      <div class="stream-body" id="streamBody">
+        <div class="stream-empty">等待事件…</div>
+      </div>
+    </div>
     <div class="btn-row">
       <button id="captureBtn">再抓一轮</button>
       <button id="syncPoiBtn">写入 dashboard</button>
@@ -168,14 +181,24 @@ async function autoCapture(tab) {
 
 // 把 sendMessage 包成"会报进度的版本" — 后端最长要等 22s，老版本 popup 卡在
 // "抓取中…" 看不到任何动静，用户以为死了。这里每 1s 更新一次状态显示已等多久，
-// 每 500ms 拉一次 get_progress 展示每个 expected endpoint 的状态。
-async function runWithProgress(tab, label) {
-  const startedAt = Date.now();
-  let timer = null;
-  let pollTimer = null;
-  let lastRenderedHtml = "";
+// 每 500ms 拉一次 get_progress 展示每个 expected endpoint 的状态；
+// 同时拉 get_events 增量补 stream log（tape reader）。
+//
+// 模块级共享状态：stream ticker (▸ 抓取中 / ■ 完成) + elapsed 计时跨 renderProgress
+// 和 updateStreamTicker，需要同一份起点。runStartedAt / lastProactive 在
+// runWithProgress 入口赋值，stream helper 读它。
+let runStartedAt = Date.now();
+let lastProactive = null;
 
-  const render = async () => {
+async function runWithProgress(tab, label) {
+  runStartedAt = Date.now();
+  lastProactive = null;
+  const startedAt = runStartedAt;
+  let timer = null;
+  let lastRenderedHtml = "";
+  let lastEventIndex = 0;          // 给 get_events 增量读用
+
+  const renderProgress = async () => {
     const sec = Math.floor((Date.now() - startedAt) / 1000);
     let html = `${label}（已等 ${sec}s）`;
     try {
@@ -207,6 +230,7 @@ async function runWithProgress(tab, label) {
           }
         }
       }
+      if (r?.proactive) lastProactive = r.proactive;
     } catch (_) {
       // popup 的 tabs.sendMessage 在 content script 重新注入时会 reject；忽略
     }
@@ -216,8 +240,25 @@ async function runWithProgress(tab, label) {
     }
   };
 
-  render();
-  timer = setInterval(() => { render(); }, 500);
+  const renderStream = async () => {
+    try {
+      const r = await chrome.tabs.sendMessage(tab.id, {
+        cmd: "get_events", sinceIndex: lastEventIndex
+      });
+      if (!r?.ok) return;
+      if (typeof r.total === "number") lastEventIndex = r.total;
+      const evs = r.events || [];
+      if (!evs.length && !($("streamLog") && !$("streamLog").hidden)) return;
+      appendStreamEvents(evs);
+      updateStreamTicker();
+    } catch (_) {
+      // content script 重新注入时 reject；忽略
+    }
+  };
+
+  renderProgress();
+  renderStream();
+  timer = setInterval(() => { renderProgress(); renderStream(); }, 500);
   console.log("[ctrip-sentry:popup] capture_now → content.js");
   try {
     const r = await chrome.tabs.sendMessage(tab.id, { cmd: "capture_now" });
@@ -230,9 +271,112 @@ async function runWithProgress(tab, label) {
     setPoiStatus("err", describeSendError(e));
   } finally {
     clearInterval(timer);
-    clearInterval(pollTimer);
+    // 抓完后还多渲染几秒 stream，让最后几条事件落定
+    setTimeout(() => { renderStream(); updateStreamTicker(); }, 800);
     const btn = document.getElementById("captureBtn");
     if (btn) btn.disabled = false;
+  }
+}
+
+// ---- stream log helpers ----
+
+const TAG_LABELS = {
+  addInfo: "addInfo", priceCal: "priceCal", resourceDetail: "resDet",
+  shelfResList: "shelfResLst",
+  "priceCal-sibling": "priceCal-sib", "resourceDetail-sibling": "resDet-sib",
+  start: "▸ start", done: "■ done",
+};
+const GLYPH_FOR = {
+  ok: "✓", err: "✗", warn: "!", rate_limited: "⚠", started: "·",
+};
+
+function eventRowHtml(ev) {
+  const ts = fmtClock(ev.at);
+  const tag = TAG_LABELS[ev.label] || ev.label || "?";
+  const tagClass = ev.kind === "info" ? "info" :
+                   ev.kind === "skip" ? "skip" :
+                   ev.kind === "phase" ? "phase" :
+                   (ev.label || "fire");
+  const ident = formatIdent(ev.ident);
+  const glyph = GLYPH_FOR[ev.status] || "?";
+  const muted = (ev.kind === "info" || ev.kind === "phase") ? "muted" : "";
+  return `<div class="ev ${muted}">
+    <span class="ts">${ts}</span>
+    <span class="tag ${escapeHtml(tagClass)}">${escapeHtml(tag)}</span>
+    <span class="ident" title="${escapeHtml(ev.ident || "")}">${ident}</span>
+    <span class="glyph ${escapeHtml(ev.status || "")}">${glyph}</span>
+  </div>`;
+}
+
+function formatIdent(s) {
+  if (!s) return "";
+  // 把 "rid=110368162 pid=110384413" 高亮 rid/pid
+  return escapeHtml(s)
+    .replace(/(rid=)(\d+)/g, '$1<span class="rid">$2</span>')
+    .replace(/(pid=)(\d+)/g, '$1<span class="pid">$2</span>');
+}
+
+function fmtClock(ms) {
+  if (!ms) return "--:--:--";
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function appendStreamEvents(evs) {
+  const wrap = $("streamLog");
+  const body = $("streamBody");
+  if (!wrap || !body) return;
+  wrap.hidden = false;
+  // 第一次有事件时去掉 empty placeholder
+  const empty = body.querySelector(".stream-empty");
+  if (empty) empty.remove();
+  const frag = document.createDocumentFragment();
+  const tmp = document.createElement("div");
+  // CSS column-reverse 让最新在顶；这里把多事件按 push 顺序插入，CSS 自动倒序显示。
+  // 但单元素 append 时 column-reverse 会让新元素跳到底部 — 所以用 prepend。
+  tmp.innerHTML = evs.map(eventRowHtml).join("");
+  while (tmp.firstChild) {
+    tmp.firstChild.classList && tmp.firstChild.classList.add("ev-new");
+    frag.appendChild(tmp.firstChild);
+  }
+  body.prepend(frag);
+  // 限速：UI 上保留最近 80 条
+  const rows = body.querySelectorAll(".ev");
+  if (rows.length > 80) {
+    for (let i = 80; i < rows.length; i++) rows[i].remove();
+  }
+}
+
+function updateStreamTicker() {
+  const wrap = $("streamLog");
+  if (!wrap) return;
+  const p = lastProactive || {};
+  const $cnt = $("streamFired");
+  const $tot = $("streamTotal");
+  const $elap = $("streamElap");
+  const $pulse = $("streamPulse");
+  const $label = $("streamLabel");
+  if ($cnt) $cnt.textContent = p.fired ?? 0;
+  if ($tot) $tot.textContent = p.total ?? 0;
+  if ($elap) {
+    const sec = Math.floor((Date.now() - runStartedAt) / 1000);
+    $elap.textContent = sec + "s";
+  }
+  if ($pulse && $label) {
+    if (p.phase === "running") {
+      $pulse.className = "pulse";
+      $label.textContent = "抓取中";
+    } else if (p.phase === "done") {
+      $pulse.className = "pulse done";
+      $label.textContent = (p.errors ? "完成 · 有错" : "完成");
+    } else if (p.phase === "skipped") {
+      $pulse.className = "pulse err";
+      $label.textContent = "已跳过";
+    } else {
+      $pulse.className = "pulse idle";
+      $label.textContent = "TAPE";
+    }
   }
 }
 

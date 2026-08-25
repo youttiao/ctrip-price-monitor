@@ -238,6 +238,23 @@
       }
       return false;
     }
+    if (msg?.cmd === "get_events") {
+      // popup 流式事件日志的增量读：sinceIndex 之后的事件
+      try {
+        const sinceIndex = Number(msg.sinceIndex || 0);
+        const r = (window.__ctrip_sentry_get_events &&
+                   window.__ctrip_sentry_get_events(sinceIndex)) || { total: 0, events: [] };
+        sendResponse({ ok: true, total: r.total, events: r.events });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e) });
+      }
+      return false;
+    }
+    if (msg?.cmd === "clear_events") {
+      try { window.__ctrip_sentry_clear_events && window.__ctrip_sentry_clear_events(); } catch (_) {}
+      sendResponse({ ok: true });
+      return false;
+    }
   });
 
   // SPA URL 切换清空缓存

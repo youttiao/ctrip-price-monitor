@@ -11,7 +11,7 @@
   if (window.__ctrip_sentry_main_installed) return;
   window.__ctrip_sentry_main_installed = true;
 
-  const SENTINEL = "[ctrip-sentry:main:v0.2.26]";
+  const SENTINEL = "[ctrip-sentry:main:v0.2.27]";
   console.log(SENTINEL, "loading on", location.href);
 
   const TARGET_PATHS = [
@@ -644,9 +644,23 @@
     return arr;
   }
 
+  // 事件 ring buffer：popup 流式日志的数据源。push 在 fireOne 钩子里 / 阶段切换处。
+  // 每个事件：{at, kind, label, ident, status, statusCode}。
+  // kind ∈ {"fire","info","skip","phase"}。status ∈ {"started","ok","err","warn","rate_limited"}。
+  // 上限 120 条防内存涨；get_events 用 sinceIndex 做增量取，0 表示全量。
+  const EVENT_BUFFER_CAP = 120;
+  const EVENT_BUFFER = [];
+  function pushEvent(ev) {
+    EVENT_BUFFER.push(ev);
+    if (EVENT_BUFFER.length > EVENT_BUFFER_CAP) {
+      EVENT_BUFFER.splice(0, EVENT_BUFFER.length - EVENT_BUFFER_CAP);
+    }
+  }
+
   async function fireOne(url, payload, label, ident) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), PROACTIVE_REQUEST_TIMEOUT_MS);
+    pushEvent({ at: Date.now(), kind: "fire", label, ident: ident || "", status: "started" });
     try {
       const r = await fetch(url, {
         method: "POST",
@@ -658,11 +672,23 @@
       clearTimeout(timer);
       console.log(SENTINEL, "✓ proactive " + label, ident, "HTTP", r.status);
       PROACTIVE_STATE.fired++;
-      return { ok: r.ok, status: r.status };
+      const ok = r.ok;
+      const statusCode = r.status;
+      if (statusCode === 429 || statusCode === 430) {
+        pushEvent({ at: Date.now(), kind: "fire", label, ident: ident || "",
+                    status: "rate_limited", statusCode });
+        console.warn(SENTINEL, "⚠ proactive " + label, ident, "WAF", statusCode);
+      } else {
+        pushEvent({ at: Date.now(), kind: "fire", label, ident: ident || "",
+                    status: ok ? "ok" : "err", statusCode });
+      }
+      return { ok, status: statusCode };
     } catch (e) {
       clearTimeout(timer);
       console.warn(SENTINEL, "✗ proactive " + label, ident, e);
       PROACTIVE_STATE.errors++;
+      pushEvent({ at: Date.now(), kind: "fire", label, ident: ident || "",
+                  status: "err", statusCode: 0, msg: String(e && e.message || e) });
       return { ok: false, status: 0 };
     }
   }
@@ -674,9 +700,12 @@
     PROACTIVE_STATE.fired = 0;
     PROACTIVE_STATE.errors = 0;
     PROACTIVE_STATE.total = 0;
+    pushEvent({ at: Date.now(), kind: "phase", label: "start",
+                ident: "viewid=" + viewid, status: "ok" });
 
     if (!viewid) {
       PROACTIVE_STATE.phase = "skipped";
+      pushEvent({ at: Date.now(), kind: "skip", label: "no_viewid", ident: "", status: "warn" });
       return { fired: 0, errors: 0, total: 0, reason: "no_viewid" };
     }
 
@@ -687,6 +716,8 @@
       PROACTIVE_STATE.phase = "skipped";
       console.log(SENTINEL, "proactive fire: already fired today, skip",
         "(force=true to bypass)");
+      pushEvent({ at: Date.now(), kind: "skip", label: "already_fired_today",
+                  ident: "viewid=" + viewid, status: "warn" });
       return { fired: 0, errors: 0, total: 0, reason: "already_fired_today" };
     }
 
@@ -694,6 +725,8 @@
     if (!shelf) {
       PROACTIVE_STATE.phase = "skipped";
       console.log(SENTINEL, "proactive fire: no shelf captured, skip");
+      pushEvent({ at: Date.now(), kind: "skip", label: "no_shelf_captured",
+                  ident: "viewid=" + viewid, status: "warn" });
       return { fired: 0, errors: 0, total: 0, reason: "no_shelf_captured" };
     }
 
@@ -724,6 +757,10 @@
     PROACTIVE_STATE.total = capped.length * 3; // addInfo + priceCal + resourceDetails
     writeFireLock(viewid);
 
+    pushEvent({ at: Date.now(), kind: "phase", label: "addInfo",
+                ident: capped.length + " rid · 上限 " + PROACTIVE_ADDINFO_CAP,
+                status: "started" });
+
     console.log(SENTINEL,
       "proactive fire start: viewid=" + viewid + " poiId=" + poiId +
       " resources=" + capped.length + "/" + mineRids.length +
@@ -744,6 +781,9 @@
       if (budgetExceeded()) {
         console.warn(SENTINEL, "addInfo: budget exceeded, break at", i);
         PROACTIVE_STATE.total -= (capped.length - i) * 3;
+        pushEvent({ at: Date.now(), kind: "info", label: "addInfo",
+                    ident: "budget 超时, 跳过剩余 " + (capped.length - i) + " rid",
+                    status: "warn" });
         break;
       }
       const r = await fireOne(PROACTIVE_ENDPOINTS.ADDINFO_URL,
@@ -759,6 +799,8 @@
     }
 
     // 第 2 轮：getProductPriceCalendar（拿每日价）
+    pushEvent({ at: Date.now(), kind: "phase", label: "priceCal",
+                ident: capped.length + " rid", status: "started" });
     for (let i = 0; i < capped.length; i++) {
       if (budgetExceeded()) {
         console.warn(SENTINEL, "priceCal: budget exceeded, break at", i);
@@ -774,6 +816,8 @@
     }
 
     // 第 3 轮：resourceDetails（人群标签）— 已能从 addInfo 拿到，但保留以兼容老 SKU。
+    pushEvent({ at: Date.now(), kind: "phase", label: "resourceDetail",
+                ident: capped.length + " rid", status: "started" });
     for (let i = 0; i < capped.length; i++) {
       if (budgetExceeded()) {
         console.warn(SENTINEL, "resourceDetail: budget exceeded, break at", i);
@@ -804,6 +848,8 @@
     // 洗牌 crowdQueries
     shuffleInPlace(crowdQueries);
     PROACTIVE_STATE.total += crowdQueries.length;
+    pushEvent({ at: Date.now(), kind: "phase", label: "shelfResList",
+                ident: crowdQueries.length + " chip", status: "started" });
     if (crowdQueries.length) {
       console.log(SENTINEL,
         "proactive fire crowd discovery: " + crowdQueries.length + " (rid, propertyId) pairs");
@@ -852,8 +898,15 @@
     const siblingList = Array.from(siblingRids);
     PROACTIVE_STATE.total += siblingList.length * 2;
     if (siblingList.length) {
+      pushEvent({ at: Date.now(), kind: "info", label: "sibling",
+                  ident: siblingList.length + " 新 rid 从 crowd fan-out",
+                  status: "ok" });
       console.log(SENTINEL,
         "proactive fire sibling discovery: " + siblingList.length + " new rids from crowd fan-out");
+    }
+    if (siblingList.length) {
+      pushEvent({ at: Date.now(), kind: "phase", label: "sibling",
+                  ident: siblingList.length + " rid × 2 端点", status: "started" });
     }
     for (let i = 0; i < siblingList.length; i++) {
       if (budgetExceeded()) {
@@ -879,6 +932,9 @@
     // 把被 WAF 拦的 rid 推到 defer 队列，5 分钟内不重试。
     if (rateLimitedRids.length) {
       pushDefer(viewid, rateLimitedRids);
+      pushEvent({ at: Date.now(), kind: "info", label: "WAF",
+                  ident: rateLimitedRids.length + " rid 被 429/430 拦截, 5min 内不重试",
+                  status: "warn" });
       console.warn(SENTINEL,
         "WAF 限速命中 " + rateLimitedRids.length + " 个 rid, 5 分钟内不重试:",
         rateLimitedRids.join(","));
@@ -888,11 +944,17 @@
     await sleepWithJitter(PROACTIVE_WAIT_MS, 4000);
 
     PROACTIVE_STATE.phase = "done";
+    const elapsedMs = Date.now() - startedAt;
     console.log(SENTINEL,
       "proactive fire done: fired=" + PROACTIVE_STATE.fired +
       " errors=" + PROACTIVE_STATE.errors +
       " total=" + PROACTIVE_STATE.total +
-      " elapsed=" + Math.round((Date.now() - startedAt) / 1000) + "s");
+      " elapsed=" + Math.round(elapsedMs / 1000) + "s");
+    pushEvent({ at: Date.now(), kind: "phase", label: "done",
+                ident: "fired " + PROACTIVE_STATE.fired + "/" + PROACTIVE_STATE.total +
+                       " · 错 " + PROACTIVE_STATE.errors + " · " +
+                       Math.round(elapsedMs / 1000) + "s",
+                status: PROACTIVE_STATE.errors ? "warn" : "ok" });
     return {
       fired: PROACTIVE_STATE.fired,
       errors: PROACTIVE_STATE.errors,
@@ -904,4 +966,16 @@
   };
 
   window.__ctrip_sentry_proactive_state = () => ({ ...PROACTIVE_STATE });
+
+  // popup 流式日志数据源：sinceIndex 增量读（0 = 全量）。reset 时清空。
+  window.__ctrip_sentry_get_events = (sinceIndex) => {
+    const since = Number(sinceIndex || 0);
+    return {
+      total: EVENT_BUFFER.length,
+      events: EVENT_BUFFER.slice(since),
+    };
+  };
+  window.__ctrip_sentry_clear_events = () => {
+    EVENT_BUFFER.length = 0;
+  };
 })();
