@@ -1,190 +1,85 @@
-// content script — 注入到 https://*.ctrip.com/*
-// 策略：劫持 fetch + XHR 拿 soa2 响应体。
-//
-// 关键难点：Ctrip H5 SDK 在 document_start 之后异步模块里
-//   `window.fetch = theirown` （用 data descriptor，不是 accessor）。
-//   所以 defineProperty 拦截完全失效，只能靠轮询重新覆盖。
-//   为了不让 wrapper 自己递归调用，我们必须在脚本最一开始就锁住
-//   「最原子的 fetch」引用（此时它就是浏览器原生 fetch），之后永远用它。
-//
-// 时机：manifest 已声明 run_at=document_start。
+// content.js — 注入到 ISOLATED world（manifest 注册）
+// 职责：
+//   1. 触发 background 用 chrome.scripting.executeScript({world:"MAIN"}) 把
+//      content_main.js 注入到 main world，那里才会真正拦截 Ctrip 的 fetch。
+//   2. 监听 main world 的 postMessage，转发给 background。
+//   3. 监听 background 的消息（capture_now / get_poi / diagnose），
+//      通过 window.__ctrip_sentry_get_inflight 等从 main world 拿数据。
+//   4. SPA URL change 时清 inflight。
 
 (function () {
-  const SENTINEL = "[ctrip-sentry:v0.2.3-2]";
+  const SENTINEL = "[ctrip-sentry:isolated:v0.2.5]";
   console.log(SENTINEL, "loading on", location.href);
-  const TARGET_PATHS = [
-    "/restapi/soa2/21052/json/getProductShelf",
-    "/restapi/soa2/12530/json/resourceAddInfo",
-    "/restapi/h5api/globalsearch/search",
-  ];
-
-  function isCtripTarget(url) {
-    if (!url) return false;
-    for (const p of TARGET_PATHS) if (url.includes(p)) return true;
-    return false;
-  }
-
-  /** @type { Map<string, any> } */
-  const inflight = new Map();
-  let currentPOI = null;
+  try { document.documentElement.setAttribute("data-ctrip-sentry", "v0.2.3-3"); } catch (_) {}
 
   function detectPOIFromURL() {
-    const u = new URL(location.href);
-    const q = u.searchParams.get("viewId");
-    if (q && /^\d+$/.test(q)) return { viewid: +q, name: document.title || "", source: "query" };
-    const m = (u.pathname + u.search).match(/\/(\d{2,6})/);
-    if (m) return { viewid: +m[1], name: document.title || "", source: "path" };
+    try {
+      const u = new URL(location.href);
+      const q = u.searchParams.get("viewId");
+      if (q && /^\d+$/.test(q)) return { viewid: +q, name: document.title || "", source: "query" };
+      const m = (u.pathname + u.search).match(/\/(\d{2,6})/);
+      if (m) return { viewid: +m[1], name: document.title || "", source: "path" };
+    } catch (_) {}
     return null;
   }
+  let currentPOI = detectPOIFromURL();
 
-  // ---- 在 document_start 锁定「最原子的 fetch / XHR.open / XHR.send」 ----
-  // 此时还没有任何页面脚本（document_start 是最早注入点）。
-  const realFetch = window.fetch.bind(window);
-  const realXHROpen = XMLHttpRequest.prototype.open;
-  const realXHRSend = XMLHttpRequest.prototype.send;
-
-  // 给 wrapped 函数挂 marker
-  function markWrapped(fn) {
+  // ---- 接 main world postMessage ----
+  window.addEventListener("message", (ev) => {
+    if (ev.source !== window) return;
+    const d = ev.data;
+    if (!d || d.src !== "ctrip-sentry-main") return;
     try {
-      Object.defineProperty(fn, "__ctrip_sentry_wrapped", { value: true, configurable: false });
-    } catch (_) {
-      fn.__ctrip_sentry_wrapped = true;
-    }
-    return fn;
-  }
+      chrome.runtime.sendMessage({ cmd: "main_event", type: d.type, payload: d.payload }).catch(() => {});
+    } catch (_) {}
+  });
 
-  // ---- fetch wrapper ----
-  function makePatchedFetch() {
-    const patched = function (input, init) {
-      const url = (typeof input === "string" ? input : input?.url) || "";
-      const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
-      const startedAt = Date.now();
-      const postData = init && init.body ? String(init.body) : undefined;
-      const key = method + " " + url + " " + startedAt;
-      inflight.set(key, { url, method, postData, startedAt });
-      let resp;
-      try {
-        resp = realFetch(input, init);
-      } catch (e) {
-        const m = inflight.get(key);
-        if (m) m.error = String(e);
-        throw e;
-      }
-      if (isCtripTarget(url) && resp && typeof resp.then === "function") {
-        Promise.resolve(resp).then(async (r) => {
-          try {
-            const text = await r.clone().text();
-            const m = inflight.get(key);
-            if (m) { m.responseBody = text; m.responseStatus = r.status; }
-          } catch (_) {}
-        });
-      }
-      return resp;
-    };
-    return markWrapped(patched);
-  }
-
-  function installFetchHook() {
-    if (window.fetch && window.fetch.__ctrip_sentry_wrapped) return;
+  // ---- 触发 main world 注入（self-ping：background 收到后用 scripting.executeScript）----
+  function requestMainWorldInject(reason) {
     try {
-      window.fetch = makePatchedFetch();
+      chrome.runtime.sendMessage({ cmd: "reinject_main_world", reason: reason || "init" }).catch(() => {});
     } catch (_) {}
   }
-
-  // ---- XHR wrapper ----
-  function makePatchedXHROpen() {
-    const patched = function (method, url) {
-      this.__ctrip = { method, url: String(url), startedAt: Date.now(), postData: undefined };
-      return realXHROpen.apply(this, arguments);
-    };
-    return markWrapped(patched);
-  }
-  function makePatchedXHRSend() {
-    const patched = function (body) {
-      const meta = this.__ctrip || (this.__ctrip = {});
-      if (body) meta.postData = String(body);
-      const self = this;
-      this.addEventListener("loadend", function () {
-        if (!meta.url) return;
-        if (!isCtripTarget(meta.url)) return;
-        meta.responseBody = self.responseText;
-        meta.responseStatus = self.status;
-      });
-      return realXHRSend.apply(this, arguments);
-    };
-    return markWrapped(patched);
-  }
-  function installXHRHooks() {
-    if (XMLHttpRequest.prototype.open.__ctrip_sentry_wrapped) return;
-    try {
-      XMLHttpRequest.prototype.open = makePatchedXHROpen();
-    } catch (_) {}
-    try {
-      XMLHttpRequest.prototype.send = makePatchedXHRSend();
-    } catch (_) {}
-  }
-
-  // 立刻装
-  installFetchHook();
-  installXHRHooks();
-
-  // 早期密集轮询（前 15s，每 100ms 检查一次）
-  let n = 0;
-  const earlyId = setInterval(() => {
-    installFetchHook();
-    installXHRHooks();
-    if (++n >= 150) clearInterval(earlyId);
-  }, 100);
-
-  // 之后每 2s 检查一次（Ctrip 偶尔会再覆盖）
-  setInterval(() => {
-    installFetchHook();
-    installXHRHooks();
-  }, 2000);
-
-  // SDK 加载完可能会再触发一轮
-  document.addEventListener("DOMContentLoaded", () => { installFetchHook(); installXHRHooks(); });
-  window.addEventListener("load", () => { installFetchHook(); installXHRHooks(); });
+  requestMainWorldInject("content_script_loaded");
 
   // ---- capture + upload ----
+  // 实际抓一轮 inflight 并上传；无请求则返回 ok=false reason=no_requests
+  // 等待策略：Ctrip SPA 启动后大约 15–25s 才发完首屏 fetch，所以这里给到 22s。
+  // 用"最近 1.5s 累计数没涨"作为"已发完"信号。
+  async function waitForRequestsStable(maxMs = 22000) {
+    let lastCount = -1;
+    let stableTicks = 0;
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      const st = (window.__ctrip_sentry_status && window.__ctrip_sentry_status()) || null;
+      const have = (window.__ctrip_sentry_get_inflight && (window.__ctrip_sentry_get_inflight() || []).length) || 0;
+      if (st && have > 0) {
+        if (have === lastCount) stableTicks++; else { stableTicks = 0; lastCount = have; }
+        if (stableTicks >= 6) return { waitedMs: Date.now() - (deadline - maxMs), lastCount };
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const have = (window.__ctrip_sentry_get_inflight && (window.__ctrip_sentry_get_inflight() || []).length) || 0;
+    return { waitedMs: maxMs, lastCount: have };
+  }
 
-  async function captureAndUpload() {
+  async function doCapture() {
     if (!location.host.includes("ctrip.com")) return { ok: false, reason: "not_ctrip" };
 
-    // 等最近一波请求完成（最多 3s）
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      let anyInflight = false;
-      for (const [, m] of inflight) {
-        if (m.startedAt + 2500 > Date.now() && !m.responseBody && !m.error) { anyInflight = true; break; }
-      }
-      if (!anyInflight) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    // 给 main world 时间收完正在飞的请求
+    await waitForRequestsStable(22000);
 
     currentPOI = detectPOIFromURL();
     if (!currentPOI) return { ok: false, reason: "no_poi_in_url" };
 
-    const reqs = [];
-    for (const [, meta] of inflight) {
-      if (!meta.responseBody) continue;
-      reqs.push({
-        url: meta.url,
-        method: meta.method,
-        postData: meta.postData ? { text: meta.postData } : undefined,
-        response: { status: meta.responseStatus, bodyText: meta.responseBody },
-      });
-    }
+    const reqs = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
     if (!reqs.length) return { ok: false, reason: "no_requests" };
-
-    const dedup = new Map();
-    for (const r of reqs) dedup.set(r.url, r);
 
     const payload = {
       capturedAt: new Date().toISOString(),
       poi: { viewid: currentPOI.viewid, name: currentPOI.name },
       pageUrl: location.href,
-      requests: Array.from(dedup.values()),
+      requests: reqs,
     };
 
     try {
@@ -195,9 +90,28 @@
     }
   }
 
+  // 从 background 收到 capture_now 时的入口
+  // 历史:之前这里会在 doCapture 返回 no_requests 时 location.reload(),想等 SPA 重发
+  //   请求再抓一次。但 reload 会销毁 isolated listener,popup 那条 await sendMessage 的
+  //   Promise 还没拿到 sendResponse 就被 close 掉,reject 进 catch 后 popup 显示
+  //   "未注入 content script" — 误导(实际注入成功了,只是 channel 被 reload 关闭了)。
+  // 现在:no_requests 直接返回,popup 那边显示"再抓一轮"提示;reload-then-recapture
+  //   这条机制本来也只有 popup 路径触发,后台 pollAndDispatchCommands 走的是
+  //   capture_main.js,不经过这里。
+  async function captureAndUpload() {
+    const r = await doCapture();
+    return r;
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.cmd === "capture_now") {
-      captureAndUpload().then(sendResponse);
+      console.log("[ctrip-sentry:isolated] capture_now received");
+      // 触发 main world 兜底重注入，避免用户中途刷新失败
+      requestMainWorldInject("capture_now");
+      captureAndUpload().then((r) => {
+        console.log("[ctrip-sentry:isolated] capture_now result", r);
+        sendResponse(r);
+      });
       return true;
     }
     if (msg?.cmd === "get_poi") {
@@ -206,15 +120,24 @@
       return false;
     }
     if (msg?.cmd === "diagnose") {
-      const f = window.fetch;
-      const o = XMLHttpRequest.prototype.open;
+      let mainStatus = null;
+      try {
+        if (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_status) {
+          const s = window.__ctrip_sentry_status();
+          const inflightCount = s.inflight;
+          mainStatus = { ...s, requests: (window.__ctrip_sentry_get_inflight() || []).length, inflightCount };
+        }
+      } catch (_) {}
       sendResponse({
         url: location.href,
-        fetchWrapped: !!(f && f.__ctrip_sentry_wrapped),
-        xhrOpenWrapped: !!(o && o.__ctrip_sentry_wrapped),
-        fetchToString: f ? String(f).slice(0, 120) : null,
-        inflight: inflight.size,
+        mainInstalled: !!window.__ctrip_sentry_main_installed,
+        mainStatus,
       });
+      return false;
+    }
+    if (msg?.cmd === "clear_inflight") {
+      try { window.__ctrip_sentry_clear_inflight && window.__ctrip_sentry_clear_inflight(); } catch (_) {}
+      sendResponse({ ok: true });
       return false;
     }
   });
@@ -224,8 +147,30 @@
   setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      inflight.clear();
+      try { window.__ctrip_sentry_clear_inflight && window.__ctrip_sentry_clear_inflight(); } catch (_) {}
       currentPOI = detectPOIFromURL();
     }
   }, 1500);
+
+  // ---- 旧:auto-reload 后再 capture 的机制 (captureAndUpload 不再 reload,这里成死代码)
+  //      保留 tryAutoCaptureAfterReload 的目的是:万一将来 background 派发的命令里
+  //      重新启用 reload-then-recapture 流程,可以在这里接住。日常 popup 路径不再触发它。
+  //      调用约定:谁要触发 reload 后自动 capture,就在 reload 前
+  //        sessionStorage.setItem("__ctrip_sentry_capture_pending", "1")。
+  async function tryAutoCaptureAfterReload() {
+    let pending = false;
+    try {
+      pending = sessionStorage.getItem("__ctrip_sentry_capture_pending") === "1";
+    } catch (_) {}
+    if (!pending) return;
+    try { sessionStorage.removeItem("__ctrip_sentry_capture_pending"); } catch (_) {}
+    console.log("[ctrip-sentry:isolated] auto-capture-after-reload: flag found, waiting for SPA fetches");
+
+    const w = await waitForRequestsStable(22000);
+    console.log("[ctrip-sentry:isolated] auto-capture-after-reload: stable-wait done", w);
+    const r = await doCapture();
+    console.log("[ctrip-sentry:isolated] auto-capture-after-reload result", r);
+  }
+  // 给 SPA 一拍启动时间再开始等
+  setTimeout(tryAutoCaptureAfterReload, 800);
 })();
