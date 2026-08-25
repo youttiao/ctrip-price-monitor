@@ -11,7 +11,7 @@
   if (window.__ctrip_sentry_main_installed) return;
   window.__ctrip_sentry_main_installed = true;
 
-  const SENTINEL = "[ctrip-sentry:main:v0.2.22]";
+  const SENTINEL = "[ctrip-sentry:main:v0.2.23]";
   console.log(SENTINEL, "loading on", location.href);
 
   const TARGET_PATHS = [
