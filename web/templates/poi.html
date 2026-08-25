@@ -20,7 +20,8 @@
           <div class="meta">
             <b>viewid {{ poi.viewid }}</b> ·
             {{ matrix.tickets|length if matrix and matrix.tickets else 0 }} 票种 ·
-            7 天窗口 ·
+            {{ matrix.window_days }} 天窗口 ·
+            <span class="mono">{{ matrix.window_label }}</span>{% if matrix.window_note %} · <span style="color:var(--amber); font-weight:600">{{ matrix.window_note }}</span>{% endif %} ·
             {% if matrix and matrix.last_round_at %}
               上一轮抓于 <b>{{ matrix.last_round_at | bj_time }}</b>
             {% else %}
@@ -53,7 +54,7 @@
     {% else %}
 
     <!-- 哨兵日报 -->
-    {% set total_days = matrix.tickets|length * 7 %}
+    {% set total_days = matrix.tickets|length * matrix.window_days %}
     <div class="daily">
       <div class="col mine">
         <div class="ttl"><span class="badge"></span>我的最低价</div>
@@ -136,7 +137,7 @@
 
     <!-- 印章矩阵 -->
     <h2 class="section-title">
-      七日价签
+      {{ matrix.window_days }} 日价签
       <span class="num">{{ matrix.date_range }}</span>
       <span class="quote">— 凡每格最低价,系当夜哨位所记 —</span>
     </h2>
@@ -153,7 +154,7 @@
                 <span class="dow">{{ dow_short }}</span>
               </th>
             {% endfor %}
-            <th style="width:80px">七日均价</th>
+            <th style="width:80px">{{ matrix.window_days }} 日均价</th>
             <th style="width:100px">我的占比</th>
           </tr>
         </thead>
@@ -291,7 +292,7 @@
                   {% endfor %}
                   <td class="avg">
                     <span class="lbl">均价</span>
-                    <span class="big">¥{{ '%.1f'|format(t.avg_7) if t.avg_7 else '—' }}</span>
+                    <span class="big">¥{{ '%.1f'|format(t.avg_window) if t.avg_window else '—' }}</span>
                   </td>
                   <td class="mine-count">
                     <span class="lbl">{{ '我的' if t.mine_state == 'mixed' else ('独占' if t.mine_state == 'only' else '—') }}</span>

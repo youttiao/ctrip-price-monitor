@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -9,6 +10,24 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .. import auth
 
 router = APIRouter(tags=["pages"])
+
+# 景区晚场截止：北京时间 18:00 之后视作今天已闭馆，价格窗口整体后移一天。
+SCENIC_CUTOFF_HOUR_BJ = 18
+
+
+def _resolve_window(now: datetime | None = None) -> tuple[int, int]:
+    """按北京时间决定价格窗口 (start_offset, days)。
+
+    - 18:00 之前：T+0 → T+6，共 7 天。
+    - 18:00 之后（含）：T+1 → T+8，共 8 天。晚场已止，
+      跳过今天，把窗口向前平移一天，多看一天以备明日决策。
+
+    `now` 参数供测试注入；None 时用 Asia/Shanghai 当前时刻。
+    """
+    when = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    if when.hour >= SCENIC_CUTOFF_HOUR_BJ:
+        return 1, 8
+    return 0, 7
 
 
 def _current(request: Request):
@@ -149,8 +168,10 @@ def poi_detail(request: Request, viewid: int):
             ORDER BY s.shelf_type_id NULLS LAST, rh.rank NULLS LAST, s.display_price
         """, (last_round_id,)).fetchall()
 
-    # price_day 查询（最近 7 天；shelf_groups 也在 matrix 里组装并标注主次）
-    matrix = _build_calendar_matrix(conn, last_round_id, viewid, my_vids, watched, days=7)
+    # price_day 查询（按北京时间 18:00 切换窗口；shelf_groups 也在 matrix 里组装并标注主次）
+    start_offset, days = _resolve_window()
+    matrix = _build_calendar_matrix(conn, last_round_id, viewid, my_vids, watched,
+                                    days=days, start_offset=start_offset)
     daily_summary = matrix.pop("daily_summary", {"mine": 0, "them": 0, "only": 0})
     has_vendor_data = matrix.pop("has_vendor_data", False)
     shelf_groups = matrix.get("shelf_groups", [])
@@ -188,31 +209,42 @@ def poi_detail(request: Request, viewid: int):
                    alerts=enriched_alerts)
 
 
-def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
-    """从 price_day 组装 7 天 × N 票种 矩阵。
+def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7, start_offset=0):
+    """从 price_day 组装 N 天 × N 票种 矩阵。
+
+    start_offset=0 时是今天起；>0 时跳过 start_offset 天（如 18:00 后窗口
+    移到 T+1 起，让 7→8 天，T+1~T+8）。
 
     Returns dict 包含：
       - dates: [{iso, day, dow, is_today, is_weekend}, ...]
       - tickets: [{resource_id, name, primary_vendor_id, is_mine, sale_count,
                    cells: [{sale_price, winning_vendor_id, vendor_label,
                             available, state, heat}, ...],
-                   avg_7, mine_state, mine_ratio, mine_label}, ...]
+                   avg_window, mine_state, mine_ratio, mine_label}, ...]
       - shelf_groups: [{id, name, role, ticket_count, mine_count, sale_total,
                         min_price, avg_price, max_price, tickets}, ...]
       - daily_summary: {mine, them, only}
       - has_vendor_data: bool
       - date_range: "08-25 → 08-31"
+      - window_days: 实际窗口天数
+      - window_start_offset: 起点相对今天的天数（0 = 今天）
+      - window_label: "T+0~T+6" 之类
+      - window_note: 18:00 后给 UI 的提示；否则空串
     """
     from datetime import date, timedelta
 
     if not round_id:
-        return {"dates": [], "tickets": [], "daily_summary":
-                {"mine": 0, "them": 0, "only": 0},
-                "has_vendor_data": False, "date_range": ""}
+        empty = {"dates": [], "tickets": [], "daily_summary":
+                 {"mine": 0, "them": 0, "only": 0},
+                 "has_vendor_data": False, "date_range": "",
+                 "window_days": days, "window_start_offset": start_offset,
+                 "window_label": _window_label(start_offset, days),
+                 "window_note": _window_note(start_offset)}
+        return empty
 
-    # 7 天窗口（北京时间 → UTC 转换在 SQL 不需要，DATE 用 UTC ISO 也对齐到日历）
+    # 窗口（北京时间 18:00 切换：18:00 后 start_offset=1，整体后移一天）
     today = date.today()
-    date_list = [today + timedelta(days=i) for i in range(days)]
+    date_list = [today + timedelta(days=start_offset + i) for i in range(days)]
     iso_dates = [d.isoformat() for d in date_list]
 
     # 一次拉全该 round 的 price_day（同时取 sku 的 raw_resource 以派生 ticket_group / audience）
@@ -354,8 +386,8 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
                 "heat": heat,
             })
 
-        # 行级汇总
-        avg_7 = sum(prices) / len(prices) if prices else 0
+        # 行级汇总（avg_window 是窗口内均价，长度按 window_days，不再叫 avg_7）
+        avg_window = sum(prices) / len(prices) if prices else 0
         covered = mine_count + them_count + only_count
         if covered == 0:
             mine_state = "none"
@@ -383,7 +415,7 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
             "parent_resource_id": meta.get("parent_resource_id"),
             "people_property": meta.get("people_property"),
             "cells": cells,
-            "avg_7": avg_7,
+            "avg_window": avg_window,
             "mine_state": mine_state,
             "mine_ratio": mine_ratio,
             "mine_label": mine_label,
@@ -514,7 +546,21 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
         "daily_summary": {"mine": mine_days, "them": them_days, "only": only_days},
         "has_vendor_data": has_vendor_data,
         "date_range": date_range,
+        "window_days": days,
+        "window_start_offset": start_offset,
+        "window_label": _window_label(start_offset, days),
+        "window_note": _window_note(start_offset),
     }
+
+
+def _window_label(start_offset: int, days: int) -> str:
+    """T+0~T+6 / T+1~T+8 — 给页面段标题/表头复用。"""
+    return f"T+{start_offset}~T+{start_offset + days - 1}"
+
+
+def _window_note(start_offset: int) -> str:
+    """窗口被平移时给 UI 的说明；start_offset=0 时返回空串。"""
+    return "18:00 后跳过今天" if start_offset > 0 else ""
 
 
 def _heat_for(price: float, prices: list[float]) -> str:
