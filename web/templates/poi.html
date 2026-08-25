@@ -116,12 +116,17 @@
     <div class="shelf-summary">
       <span class="lbl">关注 shelfType</span>
       {% for sg in matrix.shelf_groups %}
-        <span class="chip {% if sg.id in watched %}on{% endif %}"
+        {% set is_on = sg.id in watched %}
+        <span class="chip {% if is_on %}on{% endif %}"
+              data-shelf-type-id="{{ sg.id if sg.id is not none else '' }}"
+              data-active="{{ '1' if is_on else '0' }}"
+              data-mine-count="{{ sg.mine_count }}"
               hx-post="/admin/watchlist/toggle"
-              hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ sg.id }}","active":"{% if sg.id in watched %}0{% else %}1{% endif %}"}'
+              hx-vals='{"poi_viewid":"{{ poi.viewid }}","shelf_type_id":"{{ sg.id }}","active":"{% if is_on %}0{% else %}1{% endif %}"}'
               hx-trigger="click"
-              hx-swap="none">
-          {% if sg.id in watched %}<span class="star">★</span>{% else %}☆{% endif %}
+              hx-swap="none"
+              hx-on::after-request="if(event.detail.successful) window.__sentryRefreshWatchlist(this)">
+          <span class="star {% if not is_on %}dim{% endif %}">{% if is_on %}★{% else %}☆{% endif %}</span>
           {{ sg.name }}
           <span style="color:var(--ink-3); margin-left:6px">{{ sg.ticket_count }}票</span>
         </span>
@@ -155,7 +160,10 @@
         <tbody>
           {% for sg in matrix.shelf_groups %}
             <!-- ── shelf 账页头（一级：货架） ── -->
-            <tr class="shelf-band shelf-{{ sg.role }}">
+            <tr class="shelf-band shelf-{{ sg.role }}"
+                data-shelf-type-id="{{ sg.id if sg.id is not none else '' }}"
+                data-role="{{ sg.role }}"
+                data-mine-count="{{ sg.mine_count }}">
               <td colspan="{{ matrix.dates|length + 3 }}">
                 <div class="band-inner">
                   <div class="role-mark">{{ '主' if sg.role == 'primary' else '次' }}</div>
@@ -212,16 +220,13 @@
               </tr>
               {% endif %}
               {% for t in tg.variants %}
-                <tr class="role-{{ sg.role }} {% if tg.variant_count > 1 %}has-parent{% endif %}">
+                <tr class="role-{{ sg.role }} {% if tg.variant_count > 1 %}has-parent{% endif %} {% if t.people_property %}has-people{% endif %}">
                   <td>
-                    {% if tg.variant_count > 1 %}
-                      <div class="sku-name">{{ t.audience_label or t.name }}</div>
-                    {% else %}
-                      <div class="sku-name">{{ t.name }}</div>
-                    {% endif %}
+                    <div class="sku-name">{{ t.name }}</div>
                     <div class="sku-meta">
                       {% if t.is_mine %}<span class="my-tag">★ 我的</span>{% else %}rid {{ t.resource_id }}{% endif %}
                       {% if t.sale_count %} · 销 {{ '{:,}'.format(t.sale_count) }}{% endif %}
+                      {% if t.people_property %} · <span class="people-chip">{{ t.people_property }}</span>{% endif %}
                     </div>
                   </td>
                   {% for d in matrix.dates %}
@@ -259,6 +264,7 @@
                              data-vendor-brand="{{ vb or '' }}"
                              data-vendor-licence="{{ vl or '' }}"
                              data-resource-id="{{ t.resource_id }}"
+                             data-shelf-type-id="{{ t.shelf_type_id if t.shelf_type_id is not none else '' }}"
                              data-inventory="{{ inv if inv is not none else '' }}"
                              data-state="{{ cstate }}">
                           <div class="price">¥{{ '%.0f'|format(sp) }}</div>
@@ -342,9 +348,10 @@
         <div class="row" style="color:var(--ink-3)">— 尚未落盘</div>
       {% else %}
         {% for sg in matrix.shelf_groups %}
-          <div class="row">
+          {% set is_on = sg.id in watched %}
+          <div class="row" data-shelf-type-id="{{ sg.id if sg.id is not none else '' }}" data-active="{{ '1' if is_on else '0' }}">
             <span>
-              {% if sg.id in watched %}<span class="star">★</span>{% else %}☆{% endif %}
+              <span class="star {% if not is_on %}dim{% endif %}">{% if is_on %}★{% else %}☆{% endif %}</span>
               {{ sg.name }}
             </span>
             <span style="color:var(--ink-3); font-family:var(--font-mono); font-size:var(--fs-xs)">
@@ -542,5 +549,113 @@
     activeCell = null;
   });
 })();
+
+/* ============================================================
+   shelf chip toggle — 立即刷新 DOM，无需刷页
+
+   触发：HTMX POST /admin/watchlist/toggle 成功后
+   范围：受影响 shelf 的 chip / 边栏行 / 价签 cell 颜色 / 主次账页 / 日报计数
+   数据源：当前 DOM（已渲染完成 + 一致的状态）
+   ============================================================ */
+window.__sentryRefreshWatchlist = function(chip) {
+  const shelfId = chip.dataset.shelfTypeId;
+  if (!shelfId) return;
+  const nowActive = chip.dataset.active !== '1';   // 翻转
+
+  // 1) chip 自身
+  chip.dataset.active = nowActive ? '1' : '0';
+  chip.classList.toggle('on', nowActive);
+  const chipStar = chip.querySelector('.star');
+  if (chipStar) {
+    chipStar.textContent = nowActive ? '★' : '☆';
+    chipStar.classList.toggle('dim', !nowActive);
+  }
+
+  // 2) 边栏 watchlist 行
+  const asideRow = document.querySelector(
+    `.watchlist .row[data-shelf-type-id="${shelfId}"]`
+  );
+  if (asideRow) {
+    asideRow.dataset.active = nowActive ? '1' : '0';
+    const asideStar = asideRow.querySelector('.star');
+    if (asideStar) {
+      asideStar.textContent = nowActive ? '★' : '☆';
+      asideStar.classList.toggle('dim', !nowActive);
+    }
+  }
+
+  // 3) 价签 cell：被影响的「非 mine、非 empty」 cell 翻红/灰
+  //    - is-mine-cell 永不变（mine 永远胜过 watched 着色）
+  //    - seal-empty 永远不变
+  document.querySelectorAll(
+    `.seal-cell[data-shelf-type-id="${shelfId}"]:not(.is-mine-cell):not(.seal-empty)`
+  ).forEach(cell => {
+    if (nowActive) {
+      if (cell.classList.contains('is-unwatched-them')) {
+        cell.classList.remove('is-unwatched-them');
+        cell.classList.add('is-watched-them');
+      }
+    } else {
+      if (cell.classList.contains('is-watched-them')) {
+        cell.classList.remove('is-watched-them');
+        cell.classList.add('is-unwatched-them');
+      }
+    }
+  });
+
+  // 4) 哨兵日报：them/only 是 server 端按 (vendor 是 mine?) 算的，不受 watched 影响
+  //    — toggle 不该改日报计数。略过。
+
+  // 5) 主/次账页判定：
+  //    - 当前 watched 集合 = 所有 .chip[data-active="1"] 的 shelf_id（除 0）
+  //    - 主：watched 命中；否则 fallback 到最大 mine_count
+  //    - 改 shelf-band row 的 class、role-mark 字、band-rule 显隐
+  const chips = document.querySelectorAll('.shelf-summary .chip[data-shelf-type-id]');
+  const watchedNow = new Set();
+  chips.forEach(c => {
+    const id = c.dataset.shelfTypeId;
+    if (c.dataset.active === '1' && id && id !== '0') watchedNow.add(id);
+  });
+  const bands = document.querySelectorAll('tr.shelf-band[data-shelf-type-id]');
+  // 收集每组 mine_count 备用（fallback 用）
+  const mineByShelf = {};
+  bands.forEach(b => {
+    const id = b.dataset.shelfTypeId;
+    if (id) mineByShelf[id] = parseInt(b.dataset.mineCount || '0', 10) || 0;
+  });
+  // 决定主组：watched 命中；空时取 mine_count 最大（不含 shelf 0）
+  let primarySet = new Set(watchedNow);
+  if (primarySet.size === 0) {
+    let best = null, bestMc = -1;
+    Object.entries(mineByShelf).forEach(([id, mc]) => {
+      if (id !== '0' && mc > bestMc) { bestMc = mc; best = id; }
+    });
+    if (best !== null) primarySet.add(best);
+  }
+  bands.forEach(band => {
+    const id = band.dataset.shelfTypeId;
+    if (!id) return;
+    const shouldPrimary = primarySet.has(id);
+    const isPrimary = band.dataset.role === 'primary';
+    if (shouldPrimary === isPrimary) return;
+    band.classList.toggle('shelf-primary', shouldPrimary);
+    band.classList.toggle('shelf-secondary', !shouldPrimary);
+    band.dataset.role = shouldPrimary ? 'primary' : 'secondary';
+    const roleMark = band.querySelector('.role-mark');
+    if (roleMark) roleMark.textContent = shouldPrimary ? '主' : '次';
+    // band-rule 只在 primary 时显示
+    const inner = band.querySelector('.band-inner');
+    if (inner) {
+      let rule = inner.querySelector('.band-rule');
+      if (shouldPrimary && !rule) {
+        rule = document.createElement('div');
+        rule.className = 'band-rule';
+        inner.appendChild(rule);
+      } else if (!shouldPrimary && rule) {
+        rule.remove();
+      }
+    }
+  });
+};
 </script>
 {% endblock %}
