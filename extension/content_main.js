@@ -199,8 +199,45 @@
   window.addEventListener("load", () => { installFetchAccessor(); installXHRAccessors(); });
 
   // 暴露给 isolated world 调用
-  //   dedup key = url + postData 哈希：主动 fire 多个 addInfo（不同 rid）URL 相同 body 不同，
-  //   必须全部保留。server parser (_find_bodies) 也按 body 数组遍历，所以不会丢。
+  //   dedup key = url + canonical(postData) 哈希。
+  //
+  // 历史 bug (2026-08-25): ctrip SPA 会在用户操作时反复重发同一 (URL, rid)
+  // 的 priceCalendar/addInfo 调用；每次重发都换 ic_traceid（UUID），导致
+  // URL+body-hash dedup 失效，单 round 累积 315 个 priceCalendar + 315 个
+  // addInfo（~16MB），upload 耗时 10+ 分钟，502 偶发 → CORS 阻塞。
+  //
+  // 修法：dedup 前 canonicalize 掉所有 volatile 字段（UUID / 时间戳 /
+  // randomUUID）。同 (URL, rid) 的多次 fire 折叠为一条记录，payload 从
+  // ~16MB 降至 ~1MB，upload < 1s。
+  const VOLATILE_KEYS = new Set([
+    "ic_traceid", "traceid", "traceId", "_t", "ts", "timestamp",
+    "nonce", "requestId", "rid_token", "randomId",
+  ]);
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  function canonicalizeBody(parsed) {
+    if (Array.isArray(parsed)) {
+      return parsed.map(canonicalizeBody);
+    }
+    if (parsed && typeof parsed === "object") {
+      const out = {};
+      for (const k of Object.keys(parsed)) {
+        if (VOLATILE_KEYS.has(k)) continue;
+        const v = parsed[k];
+        if (typeof v === "string" && UUID_RE.test(v)) continue;
+        out[k] = canonicalizeBody(v);
+      }
+      return out;
+    }
+    return parsed;
+  }
+  function stableStringify(v) {
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    if (Array.isArray(v)) {
+      return "[" + v.map(stableStringify).join(",") + "]";
+    }
+    const keys = Object.keys(v).sort();
+    return "{" + keys.map(k => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+  }
   window.__ctrip_sentry_get_inflight = () => {
     const out = [];
     for (const [, m] of inflight) {
@@ -215,16 +252,21 @@
     }
     const dedup = new Map();
     for (const r of out) {
-      const bodyKey = r.postData && r.postData.text ? r.postData.text : "";
-      // Full-body hash: 13 priceCalendar fires share URL + first-64-chars of body
-      // (mainResourceIds[] lives deep in the body), so prefix-slice dedup collapsed
-      // 13 → 1. Hash the whole body so different mainResourceIds produce different keys.
-      let h = 0;
-      for (let i = 0; i < bodyKey.length; i++) {
-        h = ((h << 5) - h) + bodyKey.charCodeAt(i);
+      const raw = r.postData && r.postData.text ? r.postData.text : "";
+      let canon = raw;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          canon = stableStringify(canonicalizeBody(parsed));
+        } catch (_) { /* 解析失败则用原 body */ }
+      }
+      // 32-bit djb2 hash on canonical body
+      let h = 5381;
+      for (let i = 0; i < canon.length; i++) {
+        h = ((h << 5) + h) + canon.charCodeAt(i);
         h |= 0;
       }
-      const k = r.url + "::" + bodyKey.length + ":" + h.toString(36);
+      const k = r.url + "::" + canon.length + ":" + h.toString(36);
       dedup.set(k, r);
     }
     return Array.from(dedup.values());

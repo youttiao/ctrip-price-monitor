@@ -49,8 +49,8 @@ def parse_round(raw_round: dict) -> dict:
     # 2. 解析 addInfo → rid → vendor 映射
     vendor_map = _parse_addinfos(addinfo_bodies, set(shelf_lookup.keys()))
 
-    # 3. 解析 priceCalendar → 每日价
-    price_days = _parse_price_calendars(price_cal_bodies)
+    # 3. 解析 priceCalendar → 每日价（注入 vendor_map 让每行带 winning_vendor_id）
+    price_days = _parse_price_calendars(price_cal_bodies, vendor_map)
 
     # 4. 组装 SKU 列表
     skus = []
@@ -221,7 +221,7 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
 
 # ── priceCalendar 解析：(rid, date) → {price, inventory, available} ──
 
-def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
+def _parse_price_calendars(bodies: list[dict], vendor_map: dict[int, dict] | None = None) -> list[dict]:
     """从 getProductPriceCalendar 响应构建每日价行。
 
     响应结构（实测 data/sample_price_calendar.json）：
@@ -278,8 +278,10 @@ def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
             for pkg in day.get("packagePriceAndStockInfos", []) or []:
                 package_id = pkg.get("packageId")
                 for r in pkg.get("resourcePriceAndStockInfos", []) or []:
+                    rid = r.get("resourceId")
+                    primary = (vendor_map or {}).get(rid, {}).get("primary") or {}
                     out.append({
-                        "resource_id": r.get("resourceId"),
+                        "resource_id": rid,
                         "sale_date": sale_date,
                         "min_price": None,
                         "sale_price": r.get("salePrice"),
@@ -288,6 +290,13 @@ def _parse_price_calendars(bodies: list[dict]) -> list[dict]:
                         "package_id": package_id,
                         "market_price": r.get("marketPrice"),
                         "discount": r.get("discount"),
+                        # winning_vendor_id 来自 addInfo 的 vendorMap：每个
+                        # resource 绑定到一个 vendor；该 resource 在某日的
+                        # 最低价 = 该 vendor 当日「胜出」。三色 cell 用它：
+                        # 绿 = my_vids, 红 = watched_shelf ∉ my_vids,
+                        # 灰 = has_vid 且 shelf 未关注。
+                        "winning_vendor_id": primary.get("vendorId"),
+                        "winning_vendor_name": primary.get("name"),
                         "raw": r,
                     })
     return out
