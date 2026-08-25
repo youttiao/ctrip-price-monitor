@@ -75,7 +75,7 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
     ) for sku in parsed["skus"]]
 
     conn.executemany("""
-        INSERT INTO sku_snapshot (
+        INSERT OR IGNORE INTO sku_snapshot (
             round_id, resource_id, poi_viewid,
             primary_vendor_id, full_name,
             shelf_type_id, shelf_type_name, spotid,
@@ -117,7 +117,7 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
             r["gap"], r["is_mine"], captured_at,
         ) for r in rh_rows]
         conn.executemany("""
-            INSERT INTO rank_history (
+            INSERT OR IGNORE INTO rank_history (
                 round_id, poi_viewid, shelf_type_id, vendor_id, resource_id,
                 rank, display_price, lowest_resource_id, lowest_price,
                 gap, is_mine, captured_at
@@ -154,6 +154,13 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         webhook_secret = get_config(conn, "webhook_secret")
         if webhook_url:
             for a in alerts:
+                # payload 存的是 JSON 字符串，webhook splat 前要 parse 回 dict
+                payload_obj = a["payload"]
+                if isinstance(payload_obj, str):
+                    try:
+                        payload_obj = json.loads(payload_obj)
+                    except Exception:
+                        payload_obj = {}
                 payload = {
                     "ts": now,
                     "type": a["type"],
@@ -162,7 +169,7 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
                     "shelf": {"type_id": a["shelf_type_id"], "name": a["shelf_type_name"]},
                     "sku": a["sku_name"],
                     "vendor_id": a["vendor_id"],
-                    **a["payload"],
+                    **payload_obj,
                 }
                 ok, err = send_webhook(webhook_url, webhook_secret, payload, a["dedup_key"])
                 conn.execute(
