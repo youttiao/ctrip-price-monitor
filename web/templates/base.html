@@ -46,6 +46,11 @@
         <span class="pulse {{ hb.pulse }}"></span>
         <span class="when">尚未捕获 · 等首轮</span>
       {% endif %}
+      {% if hb.last_cookie_minutes_ago is not none %}
+        <span class="when">· cookie {{ hb.last_cookie_minutes_ago }} 分钟前</span>
+      {% else %}
+        <span class="who">· cookie 未同步</span>
+      {% endif %}
       <span class="who">· 共 {{ hb.round_count }} 轮</span>
     </div>
   </nav>

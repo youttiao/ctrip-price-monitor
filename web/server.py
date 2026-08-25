@@ -45,8 +45,21 @@ def create_app(db_path: str = None) -> FastAPI:
     templates.env.globals["now"] = lambda: datetime.now(timezone.utc)
     templates.env.filters["bj_time"] = _bj_time
 
+    def _minutes_since(iso_or_dt):
+        """UTC ISO / datetime → 距今分钟数（int）。失败返回 None。"""
+        if not iso_or_dt:
+            return None
+        try:
+            dt = (datetime.fromisoformat(iso_or_dt.replace("Z", "+00:00"))
+                  if isinstance(iso_or_dt, str) else iso_or_dt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int((datetime.now(timezone.utc) - dt).total_seconds() / 60)
+        except Exception:
+            return None
+
     def heartbeat(db_conn):
-        """报头心跳：上次捕获 + 距今分钟数 + pulse 状态。"""
+        """报头心跳：上次捕获 + 距今分钟数 + pulse + cookie 上次同步时间。"""
         try:
             row = db_conn.execute(
                 "SELECT MAX(received_at) AS last FROM rounds WHERE status='parsed'"
@@ -58,23 +71,24 @@ def create_app(db_path: str = None) -> FastAPI:
             cnt = db_conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
         except Exception:
             cnt = 0
-        last_min = None
-        pulse = "ok"
-        if last:
-            try:
-                if isinstance(last, str):
-                    last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
-                else:
-                    last_dt = last
-                last_min = int((datetime.now(timezone.utc) - last_dt).total_seconds() / 60)
-                if last_min > 180:
-                    pulse = "dead"
-                elif last_min > 60:
-                    pulse = "late"
-            except Exception:
-                last_min = None
+        try:
+            row = db_conn.execute("SELECT MAX(uploaded_at) AS last FROM cookies").fetchone()
+            last_cookie = row["last"] if row else None
+        except Exception:
+            last_cookie = None
+        last_min = _minutes_since(last)
+        if last_min is None:
+            pulse = "ok"
+        elif last_min > 180:
+            pulse = "dead"
+        elif last_min > 60:
+            pulse = "late"
+        else:
+            pulse = "ok"
         return {"last_at": last, "last_minutes_ago": last_min,
-                "pulse": pulse, "round_count": cnt}
+                "pulse": pulse, "round_count": cnt,
+                "last_cookie_at": last_cookie,
+                "last_cookie_minutes_ago": _minutes_since(last_cookie)}
 
     templates.env.globals["heartbeat"] = heartbeat
     app.state.tmpl = templates
