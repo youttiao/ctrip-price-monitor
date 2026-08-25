@@ -179,13 +179,18 @@ def make_round(include_rdetails: list[tuple[int, str]] | None = None,
 
 # ── 单测 ──
 
-def test_parse_shelf_parent_sku_no_people():
-    """父 SKU（productIds > 1）→ people_property=None，自身无 parent。"""
+def test_parse_shelf_parent_sku_inherits_mpri_people():
+    """父 SKU（productIds > 1）→ people_property 从 mpri.peoplePropertyName 抽（默认最便宜 chip）。
+
+    父 SKU 自身就是 (可选人群) 容器，但 addInfo 响应里它的 name 已经带 chip 后缀
+    （"…成人票"），不挂 chip tag 会让 dashboard 出现「name 带 chip 但无 chip tag」。
+    让 mpri.peoplePropertyName 流过，crowd fan-out 命中后再由 crowd_map 覆盖。
+    """
     shelf = synthetic_shelf_with_parent_sku()
     lookup = _parse_shelf(shelf, VIEWID)
     parent = lookup[100]
     assert parent["parent_resource_id"] is None
-    assert parent["people_property"] is None
+    assert parent["people_property"] == "成人票"
     assert len(parent["product_ids"]) == 2
 
 
@@ -259,10 +264,10 @@ def test_parse_round_emits_people_property():
     )
     parsed = parse_round(raw)
     by_rid = {s["resource_id"]: s for s in parsed["skus"]}
-    # 父 SKU：无 people_property
+    # 父 SKU：mpri 兜底（resourceDetails 没打它，但 shelf.mpri.peoplePropertyName="成人票"）
     assert 100 in by_rid
     assert by_rid[100]["parent_resource_id"] is None
-    assert by_rid[100]["people_property"] is None
+    assert by_rid[100]["people_property"] == "成人票"
     # 子人群：people 来自 resourceDetails
     assert by_rid[101]["people_property"] == "成人票"
     assert by_rid[102]["people_property"] == "儿童票"
@@ -635,3 +640,59 @@ def test_parse_round_keeps_sibling_when_addinfo_waf_blocked():
     assert by_rid[102]["full_name"] == "圆明园通票+智旅手册儿童票"
     assert by_rid[103]["people_property"] == "老人票"
     assert by_rid[103]["full_name"] == "圆明园通票+智旅手册老人票"
+
+
+# ── 父 SKU 人群 tag 兜底（fix 2026-08-25）──
+
+
+def test_parse_round_parent_sku_falls_back_to_shelf_mpri_when_no_rdetail_no_chip():
+    """父 SKU 无 resourceDetails 也无 chip fan-out → people_property 走 shelf.mpri.peoplePropertyName 兜底。
+
+    实测场景：天坛 110368162「天坛公园门票+下午茶(可选人群)」addInfo 响应的 name 已经
+    带 chip 后缀，但 resourceDetails 没打、chip fan-out response 也没 mpri，dashboard
+    之前会显示「天坛公园门票+下午茶成人票」无 chip tag。修了 _parse_shelf Step 4 后，
+    父 SKU 的 mpri.peoplePropertyName 流过来，至少挂上「成人票」chip。
+    """
+    raw = make_round(
+        include_rdetails=[],  # 父 100 故意不打 resourceDetails
+        include_pricecal=[101, 102, 200],
+    )
+    parsed = parse_round(raw)
+    by_rid = {s["resource_id"]: s for s in parsed["skus"]}
+    # 父 SKU：mpri.peoplePropertyName 兜底
+    assert by_rid[100]["people_property"] == "成人票"
+
+
+def test_parse_round_parent_sku_chip_fanout_overrides_mpri():
+    """父 SKU 走 chip fan-out 后 → crowd_map[rid].people_property 优先于 shelf.mpri。
+
+    实测场景：chip fan-out 命中「学生票」chip 后，people_property 应是「学生票」而不是
+    默认最便宜的「成人票」（mpri）。fallback 链 people_map > crowd > shelf 保证
+    crowd 覆盖 shelf.mpri。
+    """
+    raw = {
+        "capturedAt": "2026-08-25T14:00:00.000Z",
+        "extensionVersion": "test-synth",
+        "poi": {"viewid": VIEWID, "name": "圆明园"},
+        "requests": [
+            {"url": "/restapi/soa2/21052/json/getProductShelf",
+             "ok": True, "body": synthetic_shelf_with_parent_sku()},
+            {"url": "/restapi/soa2/12530/json/resourceAddInfo",
+             "ok": True, "body": synthetic_addinfo()},
+            # chip 端点：父 rid=100 + 学生 chip pid → 返回学生子 rid=201
+            {"url": "/restapi/soa2/21052/getShelfResourceList",
+             "ok": True, "body": synthetic_shelf_resource_list_body(
+                 rid=100, people_property_id=1460674,
+                 child_rid=201, child_name="圆明园通票+智旅手册学生票",
+                 people_name="学生票", display_price=20)},
+        ],
+        "cookies": {},
+    }
+    parsed = parse_round(raw)
+    by_rid = {s["resource_id"]: s for s in parsed["skus"]}
+    # 学生子 SKU 出现
+    assert 201 in by_rid
+    assert by_rid[201]["people_property"] == "学生票"
+    assert by_rid[201]["full_name"] == "圆明园通票+智旅手册学生票"
+    # 父 SKU 没被 chip fan-out 直接覆盖（chip 返回的是 child rid 201），仍走 shelf.mpri
+    assert by_rid[100]["people_property"] == "成人票"

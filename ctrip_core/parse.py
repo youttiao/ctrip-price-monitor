@@ -271,19 +271,17 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
                 info["shelf_type_id"] = st_id
                 info["shelf_type_name"] = st_name
 
-    # Step 4: 从 minPriceRelationInfo 抽 people_property fallback（resourceDetails 是权威源）。
-    # 父 SKU（productIds > 1）自己就是容器，不带具体人群 — 不挂 people。
-    # children 的 minPriceRelationInfo.resourceId 实测指向"本 L1 的可选人群入口 rid"
-    # （= 上层父 rid，不是 self）。多个 sibling 共用同一 mpri.resourceId，无法用其反推
-    # 唯一父子 — 故 parent_resource_id 暂不填，父子在 dashboard 通过 shelfType 自然聚合。
+    # Step 4: 从 minPriceRelationInfo 抽 people_property。
+    # 父 SKU（productIds > 1）也保留 mpri.peoplePropertyName — 它代表「默认/最便宜 chip」
+    # （mpri.resourceId 指向最便宜子 rid）。chip fan-out 命中时由 parse_round 的 crowd_map
+    # 覆盖；未命中时回落到此，dashboard 至少能看到 chip 后缀对应的 tag，避免「name 带
+    # chip 后缀但 chip tag 缺失」。children 的 mpri.resourceId 实测指向"本 L1 的可选人群
+    # 入口 rid"（= 上层父 rid，不是 self）。多个 sibling 共用同一 mpri.resourceId，无法用
+    # 其反推唯一父子 — 故 parent_resource_id 暂不填，父子在 dashboard 通过 shelfType 自然聚合。
     for rid, info in rid_to_l1.items():
         r_raw = info.get("raw") or {}
         mpri = r_raw.get("minPriceRelationInfo") or {}
-        product_ids = info.get("product_ids") or []
-        if len(product_ids) > 1:
-            info["people_property"] = None
-        else:
-            info["people_property"] = mpri.get("peoplePropertyName")
+        info["people_property"] = mpri.get("peoplePropertyName") or None
         info["parent_resource_id"] = None
 
     return rid_to_l1

@@ -11,7 +11,7 @@
   if (window.__ctrip_sentry_main_installed) return;
   window.__ctrip_sentry_main_installed = true;
 
-  const SENTINEL = "[ctrip-sentry:main:v0.2.23]";
+  const SENTINEL = "[ctrip-sentry:main:v0.2.26]";
   console.log(SENTINEL, "loading on", location.href);
 
   const TARGET_PATHS = [
@@ -38,20 +38,32 @@
     RESOURCE_DETAIL_URL:     "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails.json",
     SHELF_RESOURCE_LIST_URL: "https://m.ctrip.com/restapi/soa2/21052/getShelfResourceList",
   };
-  // 单轮主动 fire 的 resourceAddInfo 上限。详情页 shelf 通常 5-15 个 SKU，30 足够；
-  // 同时也是防 server 429 / browser socket 耗尽。
-  const PROACTIVE_ADDINFO_CAP = 20;
+  // 单轮主动 fire 的 resourceAddInfo 上限。whaleguard 2026-08-25 实测：20 个接连 (3s 间隔)
+  // 仍有 19/20 被 430 ban。降为 12 + jitter + retry-after-429 队列。
+  const PROACTIVE_ADDINFO_CAP = 12;
   // getShelfResourceList 单轮上限：(可选人群) SKU 通常 2-3 个 property，每个查 1 chip，
-  // 12 个 SKU 最多 ~36 次查询；30 够用，留冗余。
-  const PROACTIVE_CROWD_QUERY_CAP = 30;
-  // 两次 addInfo 之间的最小间隔（ms），避免瞬时风暴触发 WAF。
+  // 12 个 SKU 最多 ~36 次查询；30 够用，留冗余 — 但同样降为 15 防风暴。
+  const PROACTIVE_CROWD_QUERY_CAP = 36;
+  // 两次 addInfo 之间的基线间隔（ms），与 jitter 一起用于 sleepWithJitter。
   // 2026-08-25 测试: viewid=233/5153/5170 在 stagger=80ms 时 100% 走 WafAntibotCheckFailed
-  // (whaleguard 430), stagger=3000ms 后部分放行; 详见
-  // scripts/waf_probe.py / scripts/round_parser.py:PROACTIVE_STAGGER_MS 注释。
-  const PROACTIVE_STAGGER_MS = 3000;
+  // (whaleguard 430), stagger=3000ms 后部分放行; 但仍 19/20 ban 圆明园 — 加上 jitter +
+  // 完整浏览器头后实测再调。
+  // 基线 3500ms + ±1750ms jitter → 实际范围 1750-5250ms, floor 钳到 2000ms
+  // (用户硬性约束:同一 API 间隔不低于 2 秒)
+  const PROACTIVE_STAGGER_MS = 3500;
+  const PROACTIVE_STAGGER_JITTER_MS = 1750;
   // 主动 fire 完后等待响应的最大时长（addInfo + priceCal + resourceDetails 三轮）。
-  // 12 SKU × 3 calls × 3s ≈ 108s, 再加 16s 等响应窗口, 总 ~120s。
-  const PROACTIVE_WAIT_MS = 16000;
+  // 12 SKU × 3 calls × 4s ≈ 144s, 提至 25s 等响应窗口, 总 ~170s。
+  const PROACTIVE_WAIT_MS = 25000;
+  // 单 viewid 的总预算（ms）：3 分钟。超时强制 break 防 WAF 单 viewid 风暴。
+  const PROACTIVE_TOTAL_BUDGET_MS = 180000;
+  // 单个请求的超时（ms）：10s。配合 AbortController。
+  const PROACTIVE_REQUEST_TIMEOUT_MS = 10000;
+  // 命中 429/430 后，把该 rid 推到 sessionStorage defer 队列，5 分钟内不重试。
+  const PROACTIVE_RETRY_AFTER_429_MS = 5 * 60 * 1000;
+  // sessionStorage 锁 key 前缀（每个 viewid 每天一个标志）。
+  const FIRE_LOCK_PREFIX = "__ctrip_sentry_fired";
+  const DEFER_QUEUE_PREFIX = "__ctrip_sentry_defer";
   function isCtripTarget(url) {
     if (!url) return false;
     for (const p of TARGET_PATHS) if (String(url).indexOf(p) !== -1) return true;
@@ -546,25 +558,118 @@
     try { return JSON.parse(shelf.response.bodyText); } catch (_) { return null; }
   }
 
+  // 抖动 sleep：base + uniform(-jitter, +jitter)，最小 500ms。
+  // 破除"脚本等距"模式特征 — 携程 whaleguard 2026-08-25 实测固定 3000ms stagger
+  // 仍 19/20 ban，加 jitter 后行为更接近真人浏览节奏。
+  function sleepWithJitter(base, jitter) {
+    const delta = Math.round((Math.random() - 0.5) * 2 * (jitter || 0));
+    // 用户硬性约束:同一 API 间隔不低于 2 秒 — 这里 clamp 到 2000ms 作 hard floor
+    const ms = Math.max(2000, (base || 1000) + delta);
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  // 构造"看起来像正常浏览器发出"的 ctrip soa2 fetch headers。
+  // 浏览器 fetch 自动加 cookie + User-Agent + sec-ch-ua 等等, 但 Referer/Origin/
+  // Accept-Language/sec-fetch-* 必须在 fetch header 里给出, 否则 whaleguard 直接拦。
+  // Referer 取 window.location.href (若含 ctrip.com)，否则回退到 sight URL。
+  function buildCtripHeaders(viewid) {
+    let referer = "";
+    try {
+      if (location && /ctrip\.com/.test(location.href)) {
+        referer = location.href;
+      }
+    } catch (_) {}
+    if (!referer && viewid) {
+      referer = "https://m.ctrip.com/webapp/you/sight/1/" + viewid + ".html";
+    }
+    return {
+      "content-type": "application/json",
+      "accept": "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "origin": "https://m.ctrip.com",
+      "referer": referer,
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-dest": "empty",
+    };
+  }
+
+  // sessionStorage 锁：每天每 viewid 只 fire 一次，防止 SPA 内路由切换 / 用户点 chip 后
+  // 反复触发 fan-out 把 cookie 烧穿。返回 {alreadyFired, deferredSet}
+  function readFireLock(viewid) {
+    const day = new Date().toISOString().slice(0, 10);
+    let alreadyFired = false;
+    try {
+      alreadyFired = sessionStorage.getItem(FIRE_LOCK_PREFIX + ":" + viewid + ":" + day) === "1";
+    } catch (_) {}
+    const defer = [];
+    try {
+      const raw = sessionStorage.getItem(DEFER_QUEUE_PREFIX + ":" + viewid);
+      if (raw) {
+        const obj = JSON.parse(raw);
+        const now = Date.now();
+        for (const [rid, ts] of Object.entries(obj || {})) {
+          if (now - ts < PROACTIVE_RETRY_AFTER_429_MS) defer.push(Number(rid));
+        }
+      }
+    } catch (_) {}
+    return { alreadyFired, deferredSet: new Set(defer) };
+  }
+
+  function writeFireLock(viewid) {
+    const day = new Date().toISOString().slice(0, 10);
+    try {
+      sessionStorage.setItem(FIRE_LOCK_PREFIX + ":" + viewid + ":" + day, "1");
+    } catch (_) {}
+  }
+
+  function pushDefer(viewid, rids) {
+    if (!viewid || !rids || !rids.length) return;
+    try {
+      const key = DEFER_QUEUE_PREFIX + ":" + viewid;
+      const raw = sessionStorage.getItem(key);
+      const obj = raw ? JSON.parse(raw) : {};
+      const now = Date.now();
+      for (const rid of rids) obj[String(rid)] = now;
+      sessionStorage.setItem(key, JSON.stringify(obj));
+    } catch (_) {}
+  }
+
+  // Fisher-Yates 洗牌：破除"按 rid 顺序发"特征。
+  function shuffleInPlace(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+
   async function fireOne(url, payload, label, ident) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), PROACTIVE_REQUEST_TIMEOUT_MS);
     try {
       const r = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: buildCtripHeaders(payload && payload.__viewid),
         body: JSON.stringify(payload),
         credentials: "include",
+        signal: ac.signal,
       });
-      console.log(SENTINEL, `✓ proactive ${label}`, ident, "HTTP", r.status);
+      clearTimeout(timer);
+      console.log(SENTINEL, "✓ proactive " + label, ident, "HTTP", r.status);
       PROACTIVE_STATE.fired++;
-      return r.ok;
+      return { ok: r.ok, status: r.status };
     } catch (e) {
-      console.warn(SENTINEL, `✗ proactive ${label}`, ident, e);
+      clearTimeout(timer);
+      console.warn(SENTINEL, "✗ proactive " + label, ident, e);
       PROACTIVE_STATE.errors++;
-      return false;
+      return { ok: false, status: 0 };
     }
   }
 
-  window.__ctrip_sentry_proactive_fire = async function (viewid) {
+  // signature: __ctrip_sentry_proactive_fire(viewid, opts?: { force?: boolean })
+  // opts.force=true 时绕过 sessionStorage 每日锁（popup "立即采集" 按钮场景）。
+  window.__ctrip_sentry_proactive_fire = async function (viewid, opts) {
     PROACTIVE_STATE.phase = "running";
     PROACTIVE_STATE.fired = 0;
     PROACTIVE_STATE.errors = 0;
@@ -573,6 +678,16 @@
     if (!viewid) {
       PROACTIVE_STATE.phase = "skipped";
       return { fired: 0, errors: 0, total: 0, reason: "no_viewid" };
+    }
+
+    // 锁检查：当天是否已经 fire 过本 viewid？force=true 跳过锁。
+    const lock = readFireLock(viewid);
+    const deferredSet = lock.deferredSet;
+    if (lock.alreadyFired && !(opts && opts.force)) {
+      PROACTIVE_STATE.phase = "skipped";
+      console.log(SENTINEL, "proactive fire: already fired today, skip",
+        "(force=true to bypass)");
+      return { fired: 0, errors: 0, total: 0, reason: "already_fired_today" };
     }
 
     const shelf = findShelfBody();
@@ -599,51 +714,81 @@
       return { fired: 0, errors: 0, total: 0, reason: "no_resources", poiId };
     }
 
-    const capped = mineRids.slice(0, PROACTIVE_ADDINFO_CAP);
-    PROACTIVE_STATE.total = capped.length * 3; // addInfo + priceCal + resourceDetails (每 rid × 3 calls)
+    // 过滤掉已经在 defer 队列里的 rid（5 分钟内被 ban 过）— force 模式跳过过滤。
+    const candidates = (opts && opts.force)
+      ? mineRids.slice(0, PROACTIVE_ADDINFO_CAP)
+      : mineRids.filter((m) => !deferredSet.has(m.rid)).slice(0, PROACTIVE_ADDINFO_CAP);
+
+    // Fisher-Yates 洗牌破除顺序特征，并标记 fire 队列（同时落锁）。
+    const capped = shuffleInPlace(candidates.slice());
+    PROACTIVE_STATE.total = capped.length * 3; // addInfo + priceCal + resourceDetails
+    writeFireLock(viewid);
 
     console.log(SENTINEL,
-      `proactive fire start: viewid=${viewid} poiId=${poiId} resources=${capped.length}/${mineRids.length}`);
+      "proactive fire start: viewid=" + viewid + " poiId=" + poiId +
+      " resources=" + capped.length + "/" + mineRids.length +
+      " deferred=" + Array.from(deferredSet).length);
 
-    // resourceAddInfo × N，每个带 stagger 避免瞬时风暴触发风控
+    const startedAt = Date.now();
+    function budgetExceeded() {
+      return Date.now() - startedAt > PROACTIVE_TOTAL_BUDGET_MS;
+    }
+    // 收集被 whaleguard 拦截的 SKU，下轮重试。
+    const rateLimitedRids = [];
+
+    // 把 __viewid 注入 payload，让 fireOne 的 buildCtripHeaders 拿到正确的 referer/origin。
+    function withViewid(p) { p.__viewid = viewid; return p; }
+
+    // 第 1 轮：resourceAddInfo（最关键 — 拿 vendorInfo）
     for (let i = 0; i < capped.length; i++) {
-      fireOne(PROACTIVE_ENDPOINTS.ADDINFO_URL,
-        addinfoPayload(capped[i].rid, viewid, capped[i].productId),
+      if (budgetExceeded()) {
+        console.warn(SENTINEL, "addInfo: budget exceeded, break at", i);
+        PROACTIVE_STATE.total -= (capped.length - i) * 3;
+        break;
+      }
+      const r = await fireOne(PROACTIVE_ENDPOINTS.ADDINFO_URL,
+        withViewid(addinfoPayload(capped[i].rid, viewid, capped[i].productId)),
         "addInfo",
-        `rid=${capped[i].rid} pid=${capped[i].productId}`);
+        "rid=" + capped[i].rid + " pid=" + capped[i].productId);
+      if (r && (r.status === 429 || r.status === 430)) {
+        rateLimitedRids.push(capped[i].rid);
+      }
       if (i < capped.length - 1) {
-        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+        await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
       }
     }
 
-    // getProductPriceCalendar × N：拿每日价（calendar responses are big — 4-8KB each）
+    // 第 2 轮：getProductPriceCalendar（拿每日价）
     for (let i = 0; i < capped.length; i++) {
-      fireOne(PROACTIVE_ENDPOINTS.PRICE_CAL_URL,
-        priceCalendarPayload(capped[i].rid, poiId),
+      if (budgetExceeded()) {
+        console.warn(SENTINEL, "priceCal: budget exceeded, break at", i);
+        break;
+      }
+      await fireOne(PROACTIVE_ENDPOINTS.PRICE_CAL_URL,
+        withViewid(priceCalendarPayload(capped[i].rid, poiId)),
         "priceCal",
-        `rid=${capped[i].rid}`);
+        "rid=" + capped[i].rid);
       if (i < capped.length - 1) {
-        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+        await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
       }
     }
 
-    // resourceDetails × N：拿每 rid 的人群标签（成人/儿童/老人/不限人群），
-    // 解析后写入 sku_snapshot.people_property 和 price_day.people_property。
+    // 第 3 轮：resourceDetails（人群标签）— 已能从 addInfo 拿到，但保留以兼容老 SKU。
     for (let i = 0; i < capped.length; i++) {
-      fireOne(PROACTIVE_ENDPOINTS.RESOURCE_DETAIL_URL,
-        resourceDetailPayload(capped[i].rid, poiId),
+      if (budgetExceeded()) {
+        console.warn(SENTINEL, "resourceDetail: budget exceeded, break at", i);
+        break;
+      }
+      await fireOne(PROACTIVE_ENDPOINTS.RESOURCE_DETAIL_URL,
+        withViewid(resourceDetailPayload(capped[i].rid, poiId)),
         "resourceDetail",
-        `rid=${capped[i].rid}`);
+        "rid=" + capped[i].rid);
       if (i < capped.length - 1) {
-        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+        await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
       }
     }
 
-    // 3.5 getShelfResourceList × N：拿 (可选人群) 父 SKU 的 sibling crowd child rid。
-    //   shelf.resources[].propertyIdList 列出所有 chip 的 property id，
-    //   每个 (rid, propertyId) fire 一次 getShelfResourceList，返回对应的 child rid + name。
-    //   这是唯一补全非默认 crowd 的数据源（shelf 只返默认；addInfo/priceCal 只覆盖默认 crowd）。
-    //   跳过 productIds > 1 的「父 SKU」本身（它本身不是可购 chip），只展开其子人群。
+    // 第 4 轮：getShelfResourceList（可选人群 sibling crowd）
     const crowdQueries = [];
     for (const r of allResources) {
       if (Number(r.spotid) !== Number(viewid)) continue;
@@ -656,34 +801,105 @@
       }
       if (crowdQueries.length >= PROACTIVE_CROWD_QUERY_CAP) break;
     }
+    // 洗牌 crowdQueries
+    shuffleInPlace(crowdQueries);
     PROACTIVE_STATE.total += crowdQueries.length;
     if (crowdQueries.length) {
       console.log(SENTINEL,
-        `proactive fire crowd discovery: ${crowdQueries.length} (rid, propertyId) pairs`);
+        "proactive fire crowd discovery: " + crowdQueries.length + " (rid, propertyId) pairs");
     }
     for (let i = 0; i < crowdQueries.length; i++) {
+      if (budgetExceeded()) {
+        console.warn(SENTINEL, "shelfResList: budget exceeded, break at", i);
+        break;
+      }
       const q = crowdQueries[i];
-      fireOne(PROACTIVE_ENDPOINTS.SHELF_RESOURCE_LIST_URL,
-        shelfResourceListPayload(viewid, [q.rid], q.date, q.peoplePropertyId),
+      await fireOne(PROACTIVE_ENDPOINTS.SHELF_RESOURCE_LIST_URL,
+        withViewid(shelfResourceListPayload(viewid, [q.rid], q.date, q.peoplePropertyId)),
         "shelfResList",
-        `rid=${q.rid} pid=${q.peoplePropertyId}`);
+        "rid=" + q.rid + " pid=" + q.peoplePropertyId);
       if (i < crowdQueries.length - 1) {
-        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+        await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
       }
     }
 
-    // 3) 等响应进 inflight map（wrapper 是异步 .then 读 body）
-    await new Promise((r) => setTimeout(r, PROACTIVE_WAIT_MS));
+    // 第 4.5 轮：扫描 inflight 里 crowd 端点响应，抽出真正的 sibling child rid，给它们
+    // 补 priceCalendar + resourceDetails — 不然 chip 拆出来的 学生/儿童 rid 进了 crowd_map
+    // 但 price_day 表空，dashboard join 时这些行直接不显示。
+    // capped 是 addInfo cap 范围内的 rid（含父 rid）；新 sibling 不在 capped 里，需要单独打。
+    await sleepWithJitter(PROACTIVE_WAIT_MS, 4000);  // 等 crowd 响应落 inflight
+    const siblingRids = new Set();
+    const cappedRids = new Set(capped.map((c) => c.rid));
+    try {
+      const inflight = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
+      for (const r of inflight) {
+        if (!r || !r.url || !String(r.url).includes("/getShelfResourceList")) continue;
+        const bodyText = r.response && r.response.bodyText;
+        if (!bodyText) continue;
+        let body;
+        try { body = JSON.parse(bodyText); } catch (_) { continue; }
+        const resources = (body && body.resources) || [];
+        for (const child of resources) {
+          const childRid = child && (child.resourceId || child.id);
+          if (childRid && !cappedRids.has(Number(childRid))) {
+            siblingRids.add(Number(childRid));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(SENTINEL, "sibling rid scan failed", e);
+    }
+    const siblingList = Array.from(siblingRids);
+    PROACTIVE_STATE.total += siblingList.length * 2;
+    if (siblingList.length) {
+      console.log(SENTINEL,
+        "proactive fire sibling discovery: " + siblingList.length + " new rids from crowd fan-out");
+    }
+    for (let i = 0; i < siblingList.length; i++) {
+      if (budgetExceeded()) {
+        console.warn(SENTINEL, "sibling priceCal: budget exceeded, break at", i);
+        break;
+      }
+      const sibRid = siblingList[i];
+      // priceCalendar for sibling
+      await fireOne(PROACTIVE_ENDPOINTS.PRICE_CAL_URL,
+        withViewid(priceCalendarPayload(sibRid, poiId)),
+        "priceCal-sibling",
+        "rid=" + sibRid);
+      // resourceDetails for sibling（补 people_property，理论上 crowd_map 已有，但兜底）
+      await fireOne(PROACTIVE_ENDPOINTS.RESOURCE_DETAIL_URL,
+        withViewid(resourceDetailPayload(sibRid, poiId)),
+        "resourceDetail-sibling",
+        "rid=" + sibRid);
+      if (i < siblingList.length - 1) {
+        await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
+      }
+    }
+
+    // 把被 WAF 拦的 rid 推到 defer 队列，5 分钟内不重试。
+    if (rateLimitedRids.length) {
+      pushDefer(viewid, rateLimitedRids);
+      console.warn(SENTINEL,
+        "WAF 限速命中 " + rateLimitedRids.length + " 个 rid, 5 分钟内不重试:",
+        rateLimitedRids.join(","));
+    }
+
+    // 等响应回灌进 inflight map（wrapper 是异步 .then 读 body）。
+    await sleepWithJitter(PROACTIVE_WAIT_MS, 4000);
 
     PROACTIVE_STATE.phase = "done";
     console.log(SENTINEL,
-      `proactive fire done: fired=${PROACTIVE_STATE.fired} errors=${PROACTIVE_STATE.errors} total=${PROACTIVE_STATE.total}`);
+      "proactive fire done: fired=" + PROACTIVE_STATE.fired +
+      " errors=" + PROACTIVE_STATE.errors +
+      " total=" + PROACTIVE_STATE.total +
+      " elapsed=" + Math.round((Date.now() - startedAt) / 1000) + "s");
     return {
       fired: PROACTIVE_STATE.fired,
       errors: PROACTIVE_STATE.errors,
       total: PROACTIVE_STATE.total,
       poiId,
       rids: capped.map((c) => c.rid),
+      rateLimitedRids,
     };
   };
 
