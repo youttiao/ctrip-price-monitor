@@ -38,26 +38,34 @@ def parse_round(raw_round: dict) -> dict:
     shelf_path = S.SHELF_URL.replace(S.BASE_URL, "")
     addinfo_path = S.ADDINFO_URL.replace(S.BASE_URL, "")
     price_cal_path = S.PRICE_CAL_URL.replace(S.BASE_URL, "")
+    resource_detail_path = S.RESOURCE_DETAIL_PATH
 
     shelf_body = _find_body(raw_round, shelf_path)
     addinfo_bodies = _find_bodies(raw_round, addinfo_path)
     price_cal_bodies = _find_bodies(raw_round, price_cal_path)
+    rdetail_bodies = _find_bodies(raw_round, resource_detail_path)
 
-    # 1. 解析 shelf → 构建 rid → shelfType 映射
+    # 1. 解析 shelf → 构建 rid → shelfType 映射（同时抽 minPriceRelationInfo 派生 parent / people）
     shelf_lookup = _parse_shelf(shelf_body, viewid) if shelf_body else {}
 
     # 2. 解析 addInfo → rid → vendor 映射
     vendor_map = _parse_addinfos(addinfo_bodies, set(shelf_lookup.keys()))
 
-    # 3. 解析 priceCalendar → 每日价（注入 vendor_map 让每行带 winning_vendor_id）
-    price_days = _parse_price_calendars(price_cal_bodies, vendor_map)
+    # 3. 解析 resourceDetails → rid → peopleProperty（人群标签权威源）
+    people_map = _parse_resource_details(rdetail_bodies)
 
-    # 4. 组装 SKU 列表
+    # 4. 解析 priceCalendar → 每日价（注入 vendor_map 让每行带 winning_vendor_id + people_map 带人群）
+    price_days = _parse_price_calendars(price_cal_bodies, vendor_map, people_map, shelf_lookup)
+
+    # 5. 组装 SKU 列表
     skus = []
     if vendor_map:
         # 正常路径：addInfo + shelf 都有，按 vendor 主键 join
         for rid, info in vendor_map.items():
             shelf = shelf_lookup.get(rid, {})
+            # 人群标签：resourceDetails 优先 > shelf.minPriceRelationInfo fallback
+            people = people_map.get(rid) or shelf.get("people_property")
+            parent_rid = shelf.get("parent_resource_id")
             skus.append({
                 "resource_id": rid,
                 "primary_vendor_id": info["primary"]["vendorId"],
@@ -66,20 +74,24 @@ def parse_round(raw_round: dict) -> dict:
                 "primary_vendor_licence": info["primary"]["licenceNo"],
                 "primary_vendor_licence_pic": info["primary"].get("licencePicUrl"),
                 "display_price": shelf.get("display_price"),
-                "full_name": shelf.get("full_name") or info.get("full_name"),
+                "full_name": _build_sku_name(shelf_lookup, rid, people, info.get("full_name")),
                 "shelf_type_id": shelf.get("shelf_type_id"),
                 "shelf_type_name": shelf.get("shelf_type_name"),
-            "spotid": shelf.get("spotid") or viewid,
-            "market_price": shelf.get("market_price"),
-            "first_booking_date": shelf.get("first_booking_date"),
-            "sale_count": shelf.get("sale_count"),
-            "raw_resource": shelf.get("raw"),
-        })
+                "spotid": shelf.get("spotid") or viewid,
+                "market_price": shelf.get("market_price"),
+                "first_booking_date": shelf.get("first_booking_date"),
+                "sale_count": shelf.get("sale_count"),
+                "parent_resource_id": parent_rid,
+                "people_property": people,
+                "raw_resource": shelf.get("raw"),
+            })
     elif shelf_lookup:
         # Fallback：addInfo 没拿到（扩展只截到 getProductShelf 的常见情况）。
         # 仍然输出 SKU 行，但 vendor 字段为 None，让 dashboard 能看到货架结构。
         # 等 server 端后续补抓 addInfo 后可升级为完整 vendor 信息。
         for rid, shelf in shelf_lookup.items():
+            people = people_map.get(rid) or shelf.get("people_property")
+            parent_rid = shelf.get("parent_resource_id")
             skus.append({
                 "resource_id": rid,
                 "primary_vendor_id": 0,  # 未抓到 addInfo 的占位
@@ -88,13 +100,15 @@ def parse_round(raw_round: dict) -> dict:
                 "primary_vendor_licence": None,
                 "primary_vendor_licence_pic": None,
                 "display_price": shelf.get("display_price"),
-                "full_name": shelf.get("full_name"),
+                "full_name": _build_sku_name(shelf_lookup, rid, people, shelf.get("full_name")),
                 "shelf_type_id": shelf.get("shelf_type_id"),
                 "shelf_type_name": shelf.get("shelf_type_name"),
                 "spotid": shelf.get("spotid") or viewid,
                 "market_price": shelf.get("market_price"),
                 "first_booking_date": shelf.get("first_booking_date"),
                 "sale_count": shelf.get("sale_count"),
+                "parent_resource_id": parent_rid,
+                "people_property": people,
                 "raw_resource": shelf.get("raw"),
             })
 
@@ -107,15 +121,30 @@ def parse_round(raw_round: dict) -> dict:
     }
 
 
+def _build_sku_name(shelf_lookup: dict[int, dict], rid: int,
+                    people_property: str | None,
+                    fallback_full_name: str | None) -> str:
+    """组装 sku_snapshot.full_name：直接用 shelf.fullName / vendor 段名字。
+    父 · 人群 前缀组合 API 上无可靠父子链路（children minPriceRelationInfo
+    指向自己而非 parent），所以不强行拼。都没有则用 rid。
+    """
+    own = (fallback_full_name or (shelf_lookup.get(rid) or {}).get("full_name") or "").strip()
+    return own or (people_property or "").strip() or f"rid {rid}"
+
+
 # ── shelf 解析：构建 rid → {display_price, full_name, shelf_type_id, ...} ──
 
 def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
     """从 getProductShelf 响应构建 rid → 元数据。
 
-    三步：
+    四步：
     1. 遍历 resources[] 收集本 POI 的 rid + level1SaleUnitId
     2. 遍历 shelfGroups[] 构建 ticketGroupId → shelfGroupId 映射
     3. 遍历 shelfTypes[] 构建 shelfGroupId → shelfType(name, id)
+    4. 从 resources[].minPriceRelationInfo 抽 peoplePropertyName 作 fallback（resourceDetails
+       在 parse_round 阶段覆盖）。父 SKU（productIds > 1）people_property=None（自己
+       是容器，没有具体人群）。children 的 mpri.resourceId 指向 self，与父无 API 链接，
+       所以 parent_resource_id 暂不填 — 父子在 dashboard 通过 shelfType 自然聚合。
     """
     # Step 1: rid → level1SaleUnitId
     rid_to_l1: dict[int, dict] = {}
@@ -170,8 +199,20 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
                 info["shelf_type_id"] = st_id
                 info["shelf_type_name"] = st_name
 
-    # 过滤：丢弃没有 shelfType 的（罕见：tabType=12 是"门票"通用分组）
-    # 如果需要保留，可改用 OR 兜底
+    # Step 4: 从 minPriceRelationInfo 抽 people_property fallback（resourceDetails 是权威源）。
+    # 父 SKU（productIds > 1）自己就是容器，不带具体人群 — 不挂 people。
+    # children 的 minPriceRelationInfo.resourceId 指向 self（无 API 链接到 parent），
+    # 所以 parent_resource_id 暂不填。父/子在 dashboard 通过 shelfType 自然聚合。
+    for rid, info in rid_to_l1.items():
+        r_raw = info.get("raw") or {}
+        mpri = r_raw.get("minPriceRelationInfo") or {}
+        product_ids = info.get("product_ids") or []
+        if len(product_ids) > 1:
+            info["people_property"] = None
+        else:
+            info["people_property"] = mpri.get("peoplePropertyName")
+        info["parent_resource_id"] = None
+
     return rid_to_l1
 
 
@@ -221,7 +262,10 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
 
 # ── priceCalendar 解析：(rid, date) → {price, inventory, available} ──
 
-def _parse_price_calendars(bodies: list[dict], vendor_map: dict[int, dict] | None = None) -> list[dict]:
+def _parse_price_calendars(bodies: list[dict],
+                            vendor_map: dict[int, dict] | None = None,
+                            people_map: dict[int, str] | None = None,
+                            shelf_lookup: dict[int, dict] | None = None) -> list[dict]:
     """从 getProductPriceCalendar 响应构建每日价行。
 
     响应结构（实测 data/sample_price_calendar.json）：
@@ -280,6 +324,10 @@ def _parse_price_calendars(bodies: list[dict], vendor_map: dict[int, dict] | Non
                 for r in pkg.get("resourcePriceAndStockInfos", []) or []:
                     rid = r.get("resourceId")
                     primary = (vendor_map or {}).get(rid, {}).get("primary") or {}
+                    # 人群标签：resourceDetails > shelf.minPriceRelationInfo
+                    people = (people_map or {}).get(rid)
+                    if not people and shelf_lookup:
+                        people = shelf_lookup.get(rid, {}).get("people_property")
                     out.append({
                         "resource_id": rid,
                         "sale_date": sale_date,
@@ -297,8 +345,30 @@ def _parse_price_calendars(bodies: list[dict], vendor_map: dict[int, dict] | Non
                         # 灰 = has_vid 且 shelf 未关注。
                         "winning_vendor_id": primary.get("vendorId"),
                         "winning_vendor_name": primary.get("name"),
+                        "people_property": people,
                         "raw": r,
                     })
+    return out
+
+
+# ── resourceDetails 解析：rid → peopleProperty ──
+
+def _parse_resource_details(bodies: list[dict]) -> dict[int, str]:
+    """从 resourceDetails 响应构建 rid → peopleProperty。
+
+    每个 body 是单个 rid 的响应，data.peopleProperty 形如 "成人票"/"儿童票"/
+    "老人票"/"不限人群"。当同一 rid 多次被抓，后到的覆盖（resourceDetails 是
+    单 rid 接口，多次只可能来自不同抓轮，本轮以最后一次为准）。
+    """
+    out: dict[int, str] = {}
+    for b in bodies:
+        if not b:
+            continue
+        d = b.get("data") or {}
+        rid = d.get("resourceId")
+        pp = (d.get("peopleProperty") or "").strip()
+        if rid is not None and pp:
+            out[rid] = pp
     return out
 
 

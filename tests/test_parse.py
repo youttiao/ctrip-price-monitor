@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ctrip_core.parse import parse_round
+from ctrip_core.parse import parse_round, _parse_resource_details, _build_sku_name
 
 CAPTURES = Path(__file__).resolve().parents[1] / "_captures"
 HAS_CAPTURES = CAPTURES.exists() and any(CAPTURES.glob("*.json"))
@@ -28,8 +28,14 @@ def load(name: str):
 
 def build_round(viewid: int, poi_name: str, shelf_name: str,
                 addinfo_name: str | None = None,
-                pricecal_name: str | None = None) -> dict:
-    """合成一个 round JSON，结构与扩展 POST 的一致。"""
+                pricecal_name: str | None = None,
+                rdetail_name: str | None = None,
+                synthetic_rdetails: list[dict] | None = None) -> dict:
+    """合成一个 round JSON，结构与扩展 POST 的一致。
+
+    rdetail_name: 加载 _captures/ 里真实 resourceDetails 响应（带 wrapper）
+    synthetic_rdetails: 合成 (rid, peopleProperty) 对，直接构造响应 body
+    """
     requests = []
     if shelf_name:
         requests.append({
@@ -49,6 +55,25 @@ def build_round(viewid: int, poi_name: str, shelf_name: str,
             "ok": True,
             "body": load(pricecal_name),
         })
+    if rdetail_name:
+        requests.append({
+            "url": "/restapi/soa2/12314/json/resourceDetails",
+            "ok": True,
+            "body": load(rdetail_name),
+        })
+    if synthetic_rdetails:
+        for rid, people in synthetic_rdetails:
+            requests.append({
+                "url": "/restapi/soa2/12314/json/resourceDetails",
+                "ok": True,
+                "body": {
+                    "data": {
+                        "resourceId": rid,
+                        "peopleProperty": people,
+                        "name": f"synthetic rid {rid}",
+                    }
+                },
+            })
     return {
         "capturedAt": "2026-08-24T13:35:00Z",
         "extensionVersion": "test-1.0",

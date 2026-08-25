@@ -71,6 +71,7 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         sku.get("primary_vendor_licence"), sku.get("primary_vendor_licence_pic"),
         sku["display_price"], sku.get("market_price"),
         sku.get("first_booking_date"), sku.get("sale_count"),
+        sku.get("parent_resource_id"), sku.get("people_property"),
         json.dumps(sku.get("raw_resource") or {}, ensure_ascii=False),
     ) for sku in parsed["skus"]]
 
@@ -83,8 +84,9 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
             primary_vendor_licence, primary_vendor_licence_pic,
             display_price, market_price,
             first_booking_date, sale_count,
+            parent_resource_id, people_property,
             raw_resource
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
 
     # 2.5) price_day 批量插入（每个 rid × 每个 sale_date × 每个 package_id 一行）
@@ -95,6 +97,7 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
         pd_row["inventory"], int(pd_row["available"]) if pd_row["available"] is not None else None,
         pd_row["package_id"],
         pd_row.get("winning_vendor_id"),
+        pd_row.get("people_property"),
         json.dumps(pd_row.get("raw") or {}, ensure_ascii=False),
     ) for pd_row in parsed["price_days"]
         if pd_row.get("sale_date") and pd_row.get("resource_id")]
@@ -104,8 +107,9 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
             INSERT OR REPLACE INTO price_day (
                 round_id, resource_id, poi_viewid,
                 sale_date, min_price, sale_price,
-                inventory, available, package_id, winning_vendor_id, raw
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                inventory, available, package_id, winning_vendor_id,
+                people_property, raw
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, pd_rows)
 
     # 3) rank_history

@@ -15,6 +15,11 @@ PRICE_CAL_URL = f"{BASE_URL}/restapi/soa2/14580/json/getProductPriceCalendar"
 OVERVIEW_URL  = f"{BASE_URL}/restapi/soa2/14509/json/GetSightOverview.json"
 RESOURCE_DETAIL_URL = f"{BASE_URL}/restapi/soa2/12314/json/resourceDetails.json"
 
+# 同源 substring 匹配：parser / extension 都用 URL 中去掉 BASE_URL 的尾段做 substring。
+# 注意：extension TARGET_PATHS 故意写的是 `/restapi/soa2/12314/json/resourceDetails`
+# （无 `.json`），对 `.../resourceDetails.json` 同样命中，所以两端无需对齐。
+RESOURCE_DETAIL_PATH = "/restapi/soa2/12314/json/resourceDetails"
+
 # 自营检测（保留：用于参考信息展示）
 SELF_VENDOR_ID = 999999
 
@@ -136,6 +141,45 @@ def addinfo_payload(resource_id: int, poi_viewid: int) -> dict:
         },
         "ResourceId": resource_id,
         "PoiViewId": poi_viewid,
+    }
+
+
+# ── resourceDetails (soa2/12314) ──
+#
+# 每个 rid 单独请求。响应 data.peopleProperty 是该 resourceId 的人群标签
+# (e.g. "成人票"/"儿童票"/"老人票"/"不限人群")；扩展与 server 都可调。
+# Source: _captures/resourceDetails_req.network-request 实测 + API-MAP.md:103-115。
+
+def resource_detail_payload(rid: int, poi_id_str: str) -> dict:
+    """resourceDetails 的 payload。
+
+    poi_id_str 必须是 URL 路径里的 poiId（字符串如 "75599"），不是 viewid。
+    """
+    return {
+        "resourceId": int(rid),
+        "filters": [{"type": "DateFilter",
+                     "filterItems": [{"key": "Date", "value": ""}]}],
+        "tags": [
+            {"key": "needRateLimit", "value": "T"},
+            {"key": "needPackingVersion3", "value": "true"},
+            {"key": "needForcedLogin", "value": "T"},
+        ],
+        "clientInfo": {
+            "currency": "CNY",
+            "locale": "zh-CN",
+            "pageId": 10650097502,
+            "channelId": 116,
+            "extension": [
+                {"name": "poiId", "value": poi_id_str},
+                {"name": "needPackagingVersion3", "value": "true"},
+            ],
+            "oriSyscode": "09",
+            "syscode": "09",
+            "cid": "",
+            "appPlatform": "",
+            "ic_traceid": "",
+        },
+        "enviroment": "PROD",
     }
 
 
