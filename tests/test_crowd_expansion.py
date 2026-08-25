@@ -3,13 +3,17 @@
 验证：
 1. _parse_shelf 抽出 people_property fallback（resourceDetails 是权威源覆盖）
 2. _parse_resource_details 抽出 peopleProperty
-3. parse_round 输出每行 sku 带 people_property
-4. _build_sku_name 直接用 shelf.fullName / vendor 段名字
-5. price_day 行带 people_property（来自 resourceDetails > shelf fallback）
+3. _parse_shelf_resource_list 抽出 sibling crowd child rid（chip 端点）
+4. parse_round 输出每行 sku 带 people_property（含 chip 端点补全的 sibling crowd）
+5. _build_sku_name 直接用 shelf.fullName / vendor 段名字（chip name 优先）
+6. price_day 行带 people_property（来自 resourceDetails > shelf > crowd fallback）
 
 注意：父 SKU 与子人群之间没有可靠的 API 链接（children 的 mpri_rid 指向自己，
 与 parent 不共享 l1/productIds/fullName 前缀），所以 parent_resource_id 暂不填。
 父子在 dashboard 通过 shelfType 自然聚合。
+
+getShelfResourceList 是补全非默认 crowd 的唯一权威源：shelf 只返默认 crowd rid，
+扩展 proactive fire 把它 fan-out 到 propertyIdList 上抓所有 sibling。
 """
 import sys
 from pathlib import Path
@@ -21,6 +25,7 @@ from ctrip_core.parse import (
     parse_round,
     _parse_shelf,
     _parse_resource_details,
+    _parse_shelf_resource_list,
     _parse_price_calendars,
     _build_sku_name,
 )
@@ -320,3 +325,213 @@ def test_parse_price_calendars_with_people_map_and_shelf():
     for d in days:
         assert d["people_property"] in ("成人票", "儿童票")
         assert d["sale_price"] is not None
+
+
+# ── chip 端点 (getShelfResourceList) sibling crowd 补全 ──
+
+
+def synthetic_shelf_only_adult() -> dict:
+    """真实场景：shelf 只返默认 crowd (成人)，儿童/老人/学生 rid 不在 shelf.resources[]。
+
+    - rid=101 (成人子) 在 shelf，有 propertyIdList=[1642411, 1642413, 1586433]
+      表示 3 个可选人群 (成人/儿童/老人)。adult 是默认，被 shelf 直接收。
+    - rid=102 (儿童子) / rid=103 (老人子) **不在 shelf**，要靠 getShelfResourceList chip 端点。
+    """
+    return {
+        "poiId": POI_ID,
+        "spotid": VIEWID,
+        "resources": [
+            {
+                "id": 101, "resourceId": 101,
+                "fullName": "圆明园通票+智旅手册",
+                "productIds": [501],
+                "level1SaleUnitId": 9002,
+                "spotid": VIEWID, "displayPrice": 34,
+                "propertyIdList": [1642411, 1642413, 1586433],
+                "minPriceRelationInfo": {
+                    "resourceId": 101, "productId": 501,
+                    "peoplePropertyCode": "chengrp", "peoplePropertyName": "成人票",
+                },
+            },
+            {
+                "id": 200, "resourceId": 200,
+                "fullName": "成人票",
+                "productIds": [601],
+                "level1SaleUnitId": 9003,
+                "spotid": VIEWID, "displayPrice": 30,
+                "minPriceRelationInfo": {
+                    "resourceId": 200, "productId": 601,
+                    "peoplePropertyCode": "chengrp", "peoplePropertyName": "成人票",
+                },
+            },
+        ],
+        "shelfGroups": [
+            {"id": "sg1", "ticketGroups": [{"id": 9002}, {"id": 9003}]},
+        ],
+        "shelfTypes": [
+            {"id": 1, "name": "门票", "shelfItems": [{"shelfGroupId": "sg1"}]},
+        ],
+    }
+
+
+def synthetic_shelf_resource_list_body(rid: int, people_property_id: int,
+                                       child_rid: int, child_name: str,
+                                       people_name: str, display_price: float) -> dict:
+    """合成一个 chip 端点响应（模拟点 chip 后的返回）。"""
+    return {
+        "resources": [{
+            "id": child_rid, "resourceId": child_rid,
+            "name": child_name,
+            "spotid": VIEWID, "displayPrice": display_price,
+            "level1SaleUnitId": 9002,
+            "minPriceRelationInfo": {
+                "resourceId": child_rid,
+                "productId": 502 if people_name == "儿童票" else 503,
+                "peoplePropertyCode": f"{people_name}grp",
+                "peoplePropertyName": people_name,
+                "peoplePropertyId": people_property_id,
+            },
+        }],
+        "idList": [rid],
+        "spotid": VIEWID,
+        "peoplePropertyId": people_property_id,
+    }
+
+
+def test_parse_shelf_resource_list_extracts_children():
+    """_parse_shelf_resource_list 单测：响应 resources[] → dict[rid] = {name, people_property}。"""
+    bodies = [
+        synthetic_shelf_resource_list_body(
+            rid=101, people_property_id=1642413,
+            child_rid=102, child_name="圆明园通票+智旅手册儿童票",
+            people_name="儿童票", display_price=9),
+        synthetic_shelf_resource_list_body(
+            rid=101, people_property_id=1586433,
+            child_rid=103, child_name="圆明园通票+智旅手册老人票",
+            people_name="老人票", display_price=20),
+    ]
+    out = _parse_shelf_resource_list(bodies)
+    assert 102 in out and 103 in out
+    assert out[102]["name"] == "圆明园通票+智旅手册儿童票"
+    assert out[102]["people_property"] == "儿童票"
+    assert out[103]["name"] == "圆明园通票+智旅手册老人票"
+    assert out[103]["people_property"] == "老人票"
+
+
+def test_parse_shelf_resource_list_skips_empty_body():
+    """空 body / 无 resources[] → 不入 dict。"""
+    bodies = [{}, None, {"resources": []}, {"resources": [{}]}]
+    out = _parse_shelf_resource_list(bodies)
+    assert out == {}
+
+
+def test_parse_round_picks_up_children_from_shelf_resource_list():
+    """端到端：shelf 只有 rid=101，getShelfResourceList 给出 rid=102 (儿童)。
+
+    parse_round 输出 sku 应含 102，people_property=儿童票，full_name 含 chip 后缀。
+    """
+    raw = {
+        "capturedAt": "2026-08-25T13:35:00Z",
+        "extensionVersion": "test-synth",
+        "poi": {"viewid": VIEWID, "name": "圆明园"},
+        "requests": [
+            {"url": "/restapi/soa2/21052/json/getProductShelf",
+             "ok": True, "body": synthetic_shelf_only_adult()},
+            {"url": "/restapi/soa2/12530/json/resourceAddInfo",
+             "ok": True, "body": {
+                 "data": {"resources": [
+                     {"id": 101,
+                      "vendorInfo": {"vendorId": 1429575, "name": "v", "brandCompanyName": "b",
+                                     "licenceNo": "L"}},
+                     {"id": 200,
+                      "vendorInfo": {"vendorId": 1429576, "name": "v2", "brandCompanyName": "b2",
+                                     "licenceNo": "L2"}},
+                 ]}
+             }},
+            # chip 端点：rid=101 + propertyId=儿童 → 给出 child rid=102
+            {"url": "/restapi/soa2/21052/getShelfResourceList",
+             "ok": True, "body": synthetic_shelf_resource_list_body(
+                 rid=101, people_property_id=1642413,
+                 child_rid=102, child_name="圆明园通票+智旅手册儿童票",
+                 people_name="儿童票", display_price=9)},
+        ],
+        "cookies": {},
+    }
+    parsed = parse_round(raw)
+    by_rid = {s["resource_id"]: s for s in parsed["skus"]}
+    # 关键：102 必须出现在 sku 里（child crowd 不是 shelf 显式资源）
+    assert 102 in by_rid, f"sibling crowd child rid=102 missing; have rids={list(by_rid)}"
+    assert by_rid[102]["people_property"] == "儿童票"
+    # full_name 应该来自 chip 端点的 name（含 crowd 后缀）
+    assert by_rid[102]["full_name"] == "圆明园通票+智旅手册儿童票"
+    # parent (101) 还在
+    assert by_rid[101]["people_property"] == "成人票"
+    assert 200 in by_rid
+
+
+def test_parse_round_prefers_shelf_resource_list_over_default_name():
+    """resourceDetails + chip name 同在时，chip name 优先 (chip 后缀更具体)。"""
+    raw = {
+        "capturedAt": "2026-08-25T13:35:00Z",
+        "extensionVersion": "test-synth",
+        "poi": {"viewid": VIEWID, "name": "圆明园"},
+        "requests": [
+            {"url": "/restapi/soa2/21052/json/getProductShelf",
+             "ok": True, "body": synthetic_shelf_only_adult()},
+            {"url": "/restapi/soa2/12530/json/resourceAddInfo",
+             "ok": True, "body": {
+                 "data": {"resources": [
+                     {"id": 102,
+                      "vendorInfo": {"vendorId": 1429575, "name": "v", "brandCompanyName": "b",
+                                     "licenceNo": "L"}},
+                 ]}
+             }},
+            # resourceDetails 给 "儿童票"（无 chip 后缀），chip 端点给 "圆明园通票+智旅手册儿童票"
+            {"url": "/restapi/soa2/12314/json/resourceDetails",
+             "ok": True, "body": {"data": {"resourceId": 102, "peopleProperty": "儿童票"}}},
+            {"url": "/restapi/soa2/21052/getShelfResourceList",
+             "ok": True, "body": synthetic_shelf_resource_list_body(
+                 rid=101, people_property_id=1642413,
+                 child_rid=102, child_name="圆明园通票+智旅手册儿童票",
+                 people_name="儿童票", display_price=9)},
+        ],
+        "cookies": {},
+    }
+    parsed = parse_round(raw)
+    by_rid = {s["resource_id"]: s for s in parsed["skus"]}
+    assert by_rid[102]["people_property"] == "儿童票"  # resourceDetails 权威
+    assert by_rid[102]["full_name"] == "圆明园通票+智旅手册儿童票"  # chip name 优先
+
+
+def test_parse_round_price_day_inherits_people_from_shelf_resource_list():
+    """price_day 行 people_property 在缺 resourceDetails 时回退到 crowd_map。"""
+    raw = {
+        "capturedAt": "2026-08-25T13:35:00Z",
+        "extensionVersion": "test-synth",
+        "poi": {"viewid": VIEWID, "name": "圆明园"},
+        "requests": [
+            {"url": "/restapi/soa2/21052/json/getProductShelf",
+             "ok": True, "body": synthetic_shelf_only_adult()},
+            {"url": "/restapi/soa2/12530/json/resourceAddInfo",
+             "ok": True, "body": {
+                 "data": {"resources": [
+                     {"id": 102,
+                      "vendorInfo": {"vendorId": 1429575, "name": "v", "brandCompanyName": "b",
+                                     "licenceNo": "L"}},
+                 ]}
+             }},
+            {"url": "/restapi/soa2/14580/json/getProductPriceCalendar",
+             "ok": True, "body": synthetic_pricecal(102)},
+            {"url": "/restapi/soa2/21052/getShelfResourceList",
+             "ok": True, "body": synthetic_shelf_resource_list_body(
+                 rid=101, people_property_id=1642413,
+                 child_rid=102, child_name="圆明园通票+智旅手册儿童票",
+                 people_name="儿童票", display_price=9)},
+        ],
+        "cookies": {},
+    }
+    parsed = parse_round(raw)
+    days_by_rid = {d["resource_id"]: d for d in parsed["price_days"]}
+    assert 102 in days_by_rid
+    # price_day 行 people_property 应该来自 crowd_map（因为没 resourceDetails）
+    assert days_by_rid[102]["people_property"] == "儿童票"

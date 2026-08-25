@@ -39,11 +39,13 @@ def parse_round(raw_round: dict) -> dict:
     addinfo_path = S.ADDINFO_URL.replace(S.BASE_URL, "")
     price_cal_path = S.PRICE_CAL_URL.replace(S.BASE_URL, "")
     resource_detail_path = S.RESOURCE_DETAIL_PATH
+    shelf_resource_list_path = S.SHELF_RESOURCE_LIST_PATH
 
     shelf_body = _find_body(raw_round, shelf_path)
     addinfo_bodies = _find_bodies(raw_round, addinfo_path)
     price_cal_bodies = _find_bodies(raw_round, price_cal_path)
     rdetail_bodies = _find_bodies(raw_round, resource_detail_path)
+    srl_bodies = _find_bodies(raw_round, shelf_resource_list_path)
 
     # 1. 解析 shelf → 构建 rid → shelfType 映射（同时抽 minPriceRelationInfo 派生 parent / people）
     shelf_lookup = _parse_shelf(shelf_body, viewid) if shelf_body else {}
@@ -54,8 +56,13 @@ def parse_round(raw_round: dict) -> dict:
     # 3. 解析 resourceDetails → rid → peopleProperty（人群标签权威源）
     people_map = _parse_resource_details(rdetail_bodies)
 
+    # 3.5 解析 getShelfResourceList → rid → {name, people_property}。官方页点 chip 时
+    #     才触发；扩展 proactive fire 同 (rid, peoplePropertyId) 抓一次，把 sibling crowd
+    #     child rid 的正确 name + 人群标签带回来。idList 是单 chip 粒度，所以一个 chip 一 body。
+    crowd_map = _parse_shelf_resource_list(srl_bodies)
+
     # 4. 解析 priceCalendar → 每日价（注入 vendor_map 让每行带 winning_vendor_id + people_map 带人群）
-    price_days = _parse_price_calendars(price_cal_bodies, vendor_map, people_map, shelf_lookup)
+    price_days = _parse_price_calendars(price_cal_bodies, vendor_map, people_map, shelf_lookup, crowd_map)
 
     # 5. 组装 SKU 列表
     skus = []
@@ -63,9 +70,14 @@ def parse_round(raw_round: dict) -> dict:
         # 正常路径：addInfo + shelf 都有，按 vendor 主键 join
         for rid, info in vendor_map.items():
             shelf = shelf_lookup.get(rid, {})
-            # 人群标签：resourceDetails 优先 > shelf.minPriceRelationInfo fallback
-            people = people_map.get(rid) or shelf.get("people_property")
+            crowd = crowd_map.get(rid) or {}
+            # 人群标签：resourceDetails > getShelfResourceList > shelf.minPriceRelationInfo fallback
+            people = (people_map.get(rid)
+                      or crowd.get("people_property")
+                      or shelf.get("people_property"))
             parent_rid = shelf.get("parent_resource_id")
+            # full_name: getShelfResourceList.name 优先（chip 后缀），其次 vendor 段，最后 shelf
+            srl_name = crowd.get("name")
             skus.append({
                 "resource_id": rid,
                 "primary_vendor_id": info["primary"]["vendorId"],
@@ -74,7 +86,8 @@ def parse_round(raw_round: dict) -> dict:
                 "primary_vendor_licence": info["primary"]["licenceNo"],
                 "primary_vendor_licence_pic": info["primary"].get("licencePicUrl"),
                 "display_price": shelf.get("display_price"),
-                "full_name": _build_sku_name(shelf_lookup, rid, people, info.get("full_name")),
+                "full_name": _build_sku_name(shelf_lookup, rid, people,
+                                              srl_name or info.get("full_name")),
                 "shelf_type_id": shelf.get("shelf_type_id"),
                 "shelf_type_name": shelf.get("shelf_type_name"),
                 "spotid": shelf.get("spotid") or viewid,
@@ -90,8 +103,12 @@ def parse_round(raw_round: dict) -> dict:
         # 仍然输出 SKU 行，但 vendor 字段为 None，让 dashboard 能看到货架结构。
         # 等 server 端后续补抓 addInfo 后可升级为完整 vendor 信息。
         for rid, shelf in shelf_lookup.items():
-            people = people_map.get(rid) or shelf.get("people_property")
+            crowd = crowd_map.get(rid) or {}
+            people = (people_map.get(rid)
+                      or crowd.get("people_property")
+                      or shelf.get("people_property"))
             parent_rid = shelf.get("parent_resource_id")
+            srl_name = crowd.get("name")
             skus.append({
                 "resource_id": rid,
                 "primary_vendor_id": 0,  # 未抓到 addInfo 的占位
@@ -100,7 +117,8 @@ def parse_round(raw_round: dict) -> dict:
                 "primary_vendor_licence": None,
                 "primary_vendor_licence_pic": None,
                 "display_price": shelf.get("display_price"),
-                "full_name": _build_sku_name(shelf_lookup, rid, people, shelf.get("full_name")),
+                "full_name": _build_sku_name(shelf_lookup, rid, people,
+                                              srl_name or shelf.get("full_name")),
                 "shelf_type_id": shelf.get("shelf_type_id"),
                 "shelf_type_name": shelf.get("shelf_type_name"),
                 "spotid": shelf.get("spotid") or viewid,
@@ -111,6 +129,36 @@ def parse_round(raw_round: dict) -> dict:
                 "people_property": people,
                 "raw_resource": shelf.get("raw"),
             })
+
+    # 5.5 getShelfResourceList sibling crowd child rid — 不在 shelf.resources[] 的 rid
+    #     在前两轮 vendor_map / shelf_lookup 路径都不会被发；这里补齐它们为独立 SKU 行，
+    #     vendor 字段空（暂时）但 full_name + people_property 完整。dashboard 后续能靠
+    #     hourly round + resourceDetails 补 vendor。
+    covered = {s["resource_id"] for s in skus}
+    for rid, crowd in crowd_map.items():
+        if rid in covered:
+            continue
+        srl_name = crowd.get("name")
+        people = crowd.get("people_property") or people_map.get(rid)
+        skus.append({
+            "resource_id": rid,
+            "primary_vendor_id": 0,
+            "primary_vendor_name": None,
+            "primary_vendor_brand": None,
+            "primary_vendor_licence": None,
+            "primary_vendor_licence_pic": None,
+            "display_price": None,
+            "full_name": srl_name or f"rid {rid}",
+            "shelf_type_id": None,
+            "shelf_type_name": None,
+            "spotid": viewid,
+            "market_price": None,
+            "first_booking_date": None,
+            "sale_count": None,
+            "parent_resource_id": None,
+            "people_property": people,
+            "raw_resource": crowd.get("raw"),
+        })
 
     return {
         "captured_at": captured_at,
@@ -201,8 +249,9 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
 
     # Step 4: 从 minPriceRelationInfo 抽 people_property fallback（resourceDetails 是权威源）。
     # 父 SKU（productIds > 1）自己就是容器，不带具体人群 — 不挂 people。
-    # children 的 minPriceRelationInfo.resourceId 指向 self（无 API 链接到 parent），
-    # 所以 parent_resource_id 暂不填。父/子在 dashboard 通过 shelfType 自然聚合。
+    # children 的 minPriceRelationInfo.resourceId 实测指向"本 L1 的可选人群入口 rid"
+    # （= 上层父 rid，不是 self）。多个 sibling 共用同一 mpri.resourceId，无法用其反推
+    # 唯一父子 — 故 parent_resource_id 暂不填，父子在 dashboard 通过 shelfType 自然聚合。
     for rid, info in rid_to_l1.items():
         r_raw = info.get("raw") or {}
         mpri = r_raw.get("minPriceRelationInfo") or {}
@@ -265,7 +314,8 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
 def _parse_price_calendars(bodies: list[dict],
                             vendor_map: dict[int, dict] | None = None,
                             people_map: dict[int, str] | None = None,
-                            shelf_lookup: dict[int, dict] | None = None) -> list[dict]:
+                            shelf_lookup: dict[int, dict] | None = None,
+                            crowd_map: dict[int, dict] | None = None) -> list[dict]:
     """从 getProductPriceCalendar 响应构建每日价行。
 
     响应结构（实测 data/sample_price_calendar.json）：
@@ -324,8 +374,10 @@ def _parse_price_calendars(bodies: list[dict],
                 for r in pkg.get("resourcePriceAndStockInfos", []) or []:
                     rid = r.get("resourceId")
                     primary = (vendor_map or {}).get(rid, {}).get("primary") or {}
-                    # 人群标签：resourceDetails > shelf.minPriceRelationInfo
+                    # 人群标签：resourceDetails > getShelfResourceList > shelf.minPriceRelationInfo
                     people = (people_map or {}).get(rid)
+                    if not people and crowd_map:
+                        people = (crowd_map.get(rid) or {}).get("people_property")
                     if not people and shelf_lookup:
                         people = shelf_lookup.get(rid, {}).get("people_property")
                     out.append({
@@ -369,6 +421,35 @@ def _parse_resource_details(bodies: list[dict]) -> dict[int, str]:
         pp = (d.get("peopleProperty") or "").strip()
         if rid is not None and pp:
             out[rid] = pp
+    return out
+
+
+# ── getShelfResourceList 解析：rid → {name, people_property}（chip 端点 sibling crowd） ──
+
+def _parse_shelf_resource_list(bodies: list[dict]) -> dict[int, dict]:
+    """从 getShelfResourceList 响应构建 rid → {name, people_property}。
+
+    每个 chip 点击会 fire 这个端点，返回的 resources[].name 自带 crowd 后缀
+    （"圆明园通票+智旅手册儿童票"），resources[].minPriceRelationInfo.peoplePropertyName
+    给出人群标签。同 rid 多次出现后到的覆盖（chip 单粒度，但扩展 proactive fire 可能
+    重复触发）。
+
+    重要：sibling crowd 的 rid 不会出现在 shelf.resources[]（shelf 只返默认 crowd），
+    所以这是补全 (可选人群) 子资源 rid 的唯一权威源。Server scraper 抓不到这个
+    端点（要 w-payload-source），只能靠扩展。
+    """
+    out: dict[int, dict] = {}
+    for b in bodies:
+        if not b:
+            continue
+        for r in (b.get("resources") or []):
+            rid = r.get("resourceId")
+            if rid is None:
+                continue
+            mpri = r.get("minPriceRelationInfo") or {}
+            name = (r.get("name") or "").strip() or None
+            pp = (mpri.get("peoplePropertyName") or "").strip() or None
+            out[int(rid)] = {"name": name, "people_property": pp, "raw": r}
     return out
 
 

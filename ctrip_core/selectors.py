@@ -14,11 +14,16 @@ ADDINFO_URL   = f"{BASE_URL}/restapi/soa2/12530/json/resourceAddInfo"
 PRICE_CAL_URL = f"{BASE_URL}/restapi/soa2/14580/json/getProductPriceCalendar"
 OVERVIEW_URL  = f"{BASE_URL}/restapi/soa2/14509/json/GetSightOverview.json"
 RESOURCE_DETAIL_URL = f"{BASE_URL}/restapi/soa2/12314/json/resourceDetails.json"
+# 单 POI 单 ticket group 下的 sibling crowd 资源查询：官方页点 chip 时主动 fire。
+# 返回的 resources[].name 自带 crowd 后缀（"圆明园通票+智旅手册儿童票"）。
+# Source: 实测 2026-08-25 m.ctrip.com/restapi/soa2/21052/getShelfResourceList 抓包。
+SHELF_RESOURCE_LIST_URL = f"{BASE_URL}/restapi/soa2/21052/getShelfResourceList"
 
 # 同源 substring 匹配：parser / extension 都用 URL 中去掉 BASE_URL 的尾段做 substring。
 # 注意：extension TARGET_PATHS 故意写的是 `/restapi/soa2/12314/json/resourceDetails`
 # （无 `.json`），对 `.../resourceDetails.json` 同样命中，所以两端无需对齐。
 RESOURCE_DETAIL_PATH = "/restapi/soa2/12314/json/resourceDetails"
+SHELF_RESOURCE_LIST_PATH = "/restapi/soa2/21052/getShelfResourceList"
 
 # 自营检测（保留：用于参考信息展示）
 SELF_VENDOR_ID = 999999
@@ -272,6 +277,64 @@ def _extract_resource_candidates(search_resp: dict) -> list[dict]:
             out.extend(e for e in v["resourceList"] if isinstance(e, dict))
             return out
     return out
+
+
+# ── getShelfResourceList (soa2/21052) ──
+#
+# 单 POI 单 ticket group 下的 sibling crowd 资源查询：官方页点 chip 时主动 fire。
+# body 形如 {spotid, idList: [<rid>], peoplePropertyId: <pid>, date}，
+# 响应 resources[].name 自带 crowd 后缀 ("圆明园通票+智旅手册儿童票")，
+# resources[].minPriceRelationInfo.peoplePropertyName 给出人群标签。
+# 仅扩展调用，server scraper 走不通（需 w-payload-source）。
+# Source: 实测抓包 2026-08-25 POI 5208「圆明园通票+智旅手册(可选人群)」点儿童 chip。
+
+def shelf_resource_list_payload(spotid: int, id_list: list[int],
+                                 date: str, people_property_id: int | None) -> dict:
+    """getShelfResourceList payload。
+
+    spotid: POI 的 spotid (= viewid 实测一致，可直接传 viewid)。
+    id_list: 本次 query 的 rid 列表（单 chip = 1 个 rid）。
+    people_property_id: chip 的 property id (从 shelf.resources[i].propertyIdList 拿)。
+    date: 选日期字符串 YYYY-MM-DD。
+    """
+    return {
+        "clientInfo": {
+            "currency": "CNY",
+            "locale": "zh-CN",
+            "pageId": "10650104114",
+            "channelId": 116,
+            "extension": [],
+            "oriSyscode": "09",
+            "syscode": "09",
+            "cid": "",
+            "appPlatform": "",
+            "ic_traceid": "",
+        },
+        "enviroment": "PROD",
+        "spotid": int(spotid),
+        "tags": [{"key": "callRecallPK", "value": "pkOneOrMore"}],
+        "needResourceDetails": True,
+        "idList": [int(r) for r in id_list],
+        "date": date,
+        "token": "",
+        "peoplePropertyId": int(people_property_id) if people_property_id else 0,
+        "needResourceFilter": True,
+        "head": {
+            "cid": "",
+            "ctok": "",
+            "cver": "1.0",
+            "lang": "01",
+            "sid": str(SID),
+            "syscode": "09",
+            "auth": "",
+            "xsid": "",
+            "extension": [
+                {"name": "aid", "value": str(ALLIANCE_ID)},
+                {"name": "sid", "value": str(SID)},
+                {"name": "H5", "value": "H5"},
+            ],
+        },
+    }
 
 
 def extract_resource_ids(search_resp: dict) -> list[int]:

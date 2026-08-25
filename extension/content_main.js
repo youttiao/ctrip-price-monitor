@@ -24,22 +24,33 @@
     // 单 SKU 详情：圆明园/雍和宫详情页上点「查看详情」会触发；server parser 用不到但完整
     // 抓包对调试有用。
     "/restapi/soa2/12314/json/resourceDetails",
+    // 单 chip 详情：官方页点 (可选人群) 下的儿童/老人/学生 chip 时触发，
+    // 返回 sibling crowd child rid + 自带 crowd 后缀的 name。
+    "/restapi/soa2/21052/getShelfResourceList",
   ];
 
   // 主动 fire 用到的端点（浏览器 fetch 自动带 cookie + fingerprint，无需 w-payload-source）
   // 注意：旧 14509/GetSightOverview 在 2026-08 已返 404 整个死掉了；20036/getSightExtendInfo
   //       接替了但只返 393 字节短摘要，parser 不用，proactive 不调它。
   const PROACTIVE_ENDPOINTS = {
-    ADDINFO_URL:         "https://m.ctrip.com/restapi/soa2/12530/json/resourceAddInfo",
-    PRICE_CAL_URL:       "https://m.ctrip.com/restapi/soa2/14580/json/getProductPriceCalendar",
-    RESOURCE_DETAIL_URL: "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails.json",
+    ADDINFO_URL:             "https://m.ctrip.com/restapi/soa2/12530/json/resourceAddInfo",
+    PRICE_CAL_URL:           "https://m.ctrip.com/restapi/soa2/14580/json/getProductPriceCalendar",
+    RESOURCE_DETAIL_URL:     "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails.json",
+    SHELF_RESOURCE_LIST_URL: "https://m.ctrip.com/restapi/soa2/21052/getShelfResourceList",
   };
   // 单轮主动 fire 的 resourceAddInfo 上限。详情页 shelf 通常 5-15 个 SKU，30 足够；
   // 同时也是防 server 429 / browser socket 耗尽。
   const PROACTIVE_ADDINFO_CAP = 20;
-  // 两次 addInfo 之间的最小间隔（ms），避免瞬时风暴触发风控
-  const PROACTIVE_STAGGER_MS = 80;
-  // 主动 fire 完后等待响应的最大时长（addInfo + priceCal + resourceDetails 三轮）
+  // getShelfResourceList 单轮上限：(可选人群) SKU 通常 2-3 个 property，每个查 1 chip，
+  // 12 个 SKU 最多 ~36 次查询；30 够用，留冗余。
+  const PROACTIVE_CROWD_QUERY_CAP = 30;
+  // 两次 addInfo 之间的最小间隔（ms），避免瞬时风暴触发 WAF。
+  // 2026-08-25 测试: viewid=233/5153/5170 在 stagger=80ms 时 100% 走 WafAntibotCheckFailed
+  // (whaleguard 430), stagger=3000ms 后部分放行; 详见
+  // scripts/waf_probe.py / scripts/round_parser.py:PROACTIVE_STAGGER_MS 注释。
+  const PROACTIVE_STAGGER_MS = 3000;
+  // 主动 fire 完后等待响应的最大时长（addInfo + priceCal + resourceDetails 三轮）。
+  // 12 SKU × 3 calls × 3s ≈ 108s, 再加 16s 等响应窗口, 总 ~120s。
   const PROACTIVE_WAIT_MS = 16000;
   function isCtripTarget(url) {
     if (!url) return false;
@@ -481,6 +492,53 @@
     };
   }
 
+  // getShelfResourceList (soa2/21052) payload — 单 (rid, peoplePropertyId) 查询 sibling crowd
+  // child rid。官方页点 chip 时调用；扩展 proactive fire 同粒度 fan-out (每个 rid 的
+  // propertyIdList) 把所有 sibling crowd 一次拿齐。响应 resources[].name 自带 crowd
+  // 后缀 ("圆明园通票+智旅手册儿童票")，resources[].minPriceRelationInfo.peoplePropertyName
+  // 给出人群标签。
+  // 参考 ctrip_core/selectors.py:shelf_resource_list_payload。
+  function shelfResourceListPayload(spotid, idList, dateStr, peoplePropertyId) {
+    return {
+      clientInfo: {
+        currency: "CNY",
+        locale: "zh-CN",
+        pageId: "10650104114",
+        channelId: 116,
+        extension: [],
+        oriSyscode: "09",
+        syscode: "09",
+        cid: "",
+        appPlatform: "",
+        ic_traceid: (crypto && crypto.randomUUID ? crypto.randomUUID() : ""),
+      },
+      enviroment: "PROD",
+      spotid: Number(spotid),
+      tags: [{ key: "callRecallPK", value: "pkOneOrMore" }],
+      needResourceDetails: true,
+      idList: (idList || []).map(Number),
+      date: String(dateStr || ""),
+      token: "",
+      peoplePropertyId: Number(peoplePropertyId) || 0,
+      needResourceFilter: true,
+      head: {
+        cid: getGuidFromCookie(),
+        ctok: "",
+        cver: "1.0",
+        lang: "01",
+        sid: "8888",
+        syscode: "09",
+        auth: "",
+        xsid: "",
+        extension: [
+          { name: "aid", value: "66672" },
+          { name: "sid", value: "1693366" },
+          { name: "H5", value: "H5" },
+        ],
+      },
+    };
+  }
+
   function findShelfBody() {
     const captured = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
     const shelf = captured.find((r) => String(r.url).includes("getProductShelf"));
@@ -577,6 +635,39 @@
         "resourceDetail",
         `rid=${capped[i].rid}`);
       if (i < capped.length - 1) {
+        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+      }
+    }
+
+    // 3.5 getShelfResourceList × N：拿 (可选人群) 父 SKU 的 sibling crowd child rid。
+    //   shelf.resources[].propertyIdList 列出所有 chip 的 property id，
+    //   每个 (rid, propertyId) fire 一次 getShelfResourceList，返回对应的 child rid + name。
+    //   这是唯一补全非默认 crowd 的数据源（shelf 只返默认；addInfo/priceCal 只覆盖默认 crowd）。
+    //   跳过 productIds > 1 的「父 SKU」本身（它本身不是可购 chip），只展开其子人群。
+    const crowdQueries = [];
+    for (const r of allResources) {
+      if (Number(r.spotid) !== Number(viewid)) continue;
+      const props = Array.isArray(r.propertyIdList) ? r.propertyIdList : [];
+      if (!props.length) continue;
+      const today = new Date().toISOString().slice(0, 10);
+      for (const pid of props) {
+        crowdQueries.push({ rid: r.resourceId, peoplePropertyId: pid, date: today });
+        if (crowdQueries.length >= PROACTIVE_CROWD_QUERY_CAP) break;
+      }
+      if (crowdQueries.length >= PROACTIVE_CROWD_QUERY_CAP) break;
+    }
+    PROACTIVE_STATE.total += crowdQueries.length;
+    if (crowdQueries.length) {
+      console.log(SENTINEL,
+        `proactive fire crowd discovery: ${crowdQueries.length} (rid, propertyId) pairs`);
+    }
+    for (let i = 0; i < crowdQueries.length; i++) {
+      const q = crowdQueries[i];
+      fireOne(PROACTIVE_ENDPOINTS.SHELF_RESOURCE_LIST_URL,
+        shelfResourceListPayload(viewid, [q.rid], q.date, q.peoplePropertyId),
+        "shelfResList",
+        `rid=${q.rid} pid=${q.peoplePropertyId}`);
+      if (i < crowdQueries.length - 1) {
         await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
       }
     }
