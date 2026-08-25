@@ -224,6 +224,7 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
                s.full_name AS sku_name, s.primary_vendor_id,
                s.shelf_type_id, s.shelf_type_name,
                s.sale_count,
+               s.parent_resource_id, s.people_property,
                s.raw_resource,
                v.name AS winning_vendor_name,
                v.brand_company_name AS winning_vendor_brand,
@@ -243,21 +244,17 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
     for r in rows:
         rid = r["resource_id"]
         if rid not in sku_meta:
-            # 解析 raw_resource，派生 ticket_group_id (=level1SaleUnitId) 与 audience_label (=fullName)
             raw = {}
             try:
                 raw = _json.loads(r["raw_resource"] or "{}")
             except Exception:
                 raw = {}
             tg_id = raw.get("level1SaleUnitId")
-            aud_label = raw.get("fullName") or r["sku_name"] or f"rid {rid}"
-            full_product_name = raw.get("name") or aud_label
-            # 父组名 = full_product_name 去掉 audience_label 后缀
-            if aud_label and full_product_name.endswith(aud_label):
-                group_name = full_product_name[: -len(aud_label)].rstrip(" （(")
-            else:
-                group_name = full_product_name
-            # 父组级 saleCount（从父组里挑一个 SKU 的即可，下面会用 max）
+            # 人群标签：sku_snapshot.people_property > raw_resource.fullName（老数据 fallback）
+            people_property = r["people_property"] or None
+            audience_label = people_property or raw.get("fullName") or r["sku_name"] or f"rid {rid}"
+            full_product_name = raw.get("name") or audience_label
+            group_name = full_product_name
             sku_meta[rid] = {
                 "name": r["sku_name"] or f"rid {rid}",
                 "primary_vendor_id": r["primary_vendor_id"],
@@ -266,8 +263,10 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
                 "shelf_type_id": r["shelf_type_id"],
                 "shelf_type_name": r["shelf_type_name"],
                 "ticket_group_id": tg_id,
-                "audience_label": aud_label,
+                "audience_label": audience_label,
                 "ticket_group_name": group_name,
+                "parent_resource_id": None,
+                "people_property": people_property,
             }
         cells_by_rid[rid][r["sale_date"]] = {
             "sale_price": r["sale_price"],
@@ -381,6 +380,8 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
             "ticket_group_id": meta.get("ticket_group_id"),
             "ticket_group_name": meta.get("ticket_group_name"),
             "audience_label": meta.get("audience_label"),
+            "parent_resource_id": meta.get("parent_resource_id"),
+            "people_property": meta.get("people_property"),
             "cells": cells,
             "avg_7": avg_7,
             "mine_state": mine_state,

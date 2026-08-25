@@ -107,6 +107,19 @@ def fetch_price_calendar(client: httpx.Client, cookies: dict, rid: int,
     return r.json()
 
 
+def fetch_resource_detail(client: httpx.Client, cookies: dict, rid: int,
+                          poi_id_str: str) -> dict:
+    """调一次 resourceDetails(soa2/12314)。返回 data.peopleProperty 给人群标签。
+
+    单 rid 接口；服务器端可调,无需 w-payload-source。
+    """
+    body = S.resource_detail_payload(rid, poi_id_str)
+    r = client.post(S.RESOURCE_DETAIL_URL, json=body,
+                    headers=S.build_headers(cookies, "rdetail"))
+    r.raise_for_status()
+    return r.json()
+
+
 def collect_round(poi: dict, cookies: dict) -> dict:
     """组装一个 round：search + 每 rid 的 addInfo + 每 rid 的 priceCalendar。
 
@@ -169,6 +182,23 @@ def collect_round(poi: dict, cookies: dict) -> dict:
                     "url": S.PRICE_CAL_URL,
                     "method": "POST",
                     "postData": {"text": json.dumps(S.price_calendar_payload(rid, effective_poi_id, cookies))},
+                    "body": {"_error": str(e)},
+                })
+
+            # resourceDetails → peopleProperty (成人/儿童/老人 标签)
+            try:
+                rd = fetch_resource_detail(client, cookies, rid, effective_poi_id)
+                requests.append({
+                    "url": S.RESOURCE_DETAIL_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.resource_detail_payload(rid, effective_poi_id))},
+                    "body": rd,
+                })
+            except Exception as e:
+                requests.append({
+                    "url": S.RESOURCE_DETAIL_URL,
+                    "method": "POST",
+                    "postData": {"text": json.dumps(S.resource_detail_payload(rid, effective_poi_id))},
                     "body": {"_error": str(e)},
                 })
             time.sleep(_CALENDAR_THROTTLE_SEC)

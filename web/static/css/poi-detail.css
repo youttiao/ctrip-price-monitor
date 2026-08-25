@@ -209,6 +209,43 @@ table.cal .sku-meta .my-tag {
   font-family: var(--font-display); font-weight: 700;
   margin-left: 4px;
 }
+
+/* ── 子人群票种展开：成人/儿童/老人/优待 chip ── */
+table.cal .sku-name .sku-parent {
+  color: var(--ink-2);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+table.cal .sku-name .sku-sep {
+  color: var(--ink-3);
+  margin: 0 2px;
+  font-weight: 400;
+}
+table.cal .sku-name .sku-people {
+  color: var(--ink);
+  font-weight: 700;
+}
+table.cal .sku-meta .people-chip {
+  display: inline-block; padding: 1px 6px;
+  background: #EEF2F7;
+  color: var(--ink-1);
+  border-radius: 3px;
+  font-family: var(--font-display);
+  letter-spacing: .02em;
+}
+table.cal tr.has-people .sku-meta .people-chip {
+  background: #FFF4E0;
+  color: #8B5A00;
+}
+table.cal .sku-meta .parent-chip {
+  display: inline-block; padding: 1px 6px;
+  background: transparent;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+}
 table.cal .avg, table.cal .mine-count {
   text-align: center; padding: var(--sp-2);
   vertical-align: middle;
@@ -580,7 +617,8 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   border-bottom: 1px dashed var(--rule);
 }
 .watchlist .row:last-child { border-bottom: none; }
-.watchlist .star { color: var(--seal); }
+.watchlist .star { color: var(--seal); transition: color .15s ease, opacity .15s ease; }
+.watchlist .star.dim { color: var(--ink-3); opacity: .85; }
 .watchlist .toggle {
   cursor: pointer; user-select: none;
   font-family: var(--font-display); font-size: var(--fs-sm);
@@ -642,10 +680,12 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
   color: var(--ink-2);
   background: var(--paper);
   cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
 }
 .shelf-summary .chip:hover { border-color: var(--seal); color: var(--seal); }
 .shelf-summary .chip.on { color: var(--seal); border-color: var(--seal); background: var(--seal-soft); }
-.shelf-summary .chip .star { color: var(--seal); }
+.shelf-summary .chip .star { color: var(--seal); transition: color .15s ease, opacity .15s ease; }
+.shelf-summary .chip .star.dim { color: var(--ink-3); opacity: .85; }
 
 /* 移动端 */
 @media (max-width: 720px) {

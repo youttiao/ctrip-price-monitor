@@ -30,16 +30,17 @@
   // 注意：旧 14509/GetSightOverview 在 2026-08 已返 404 整个死掉了；20036/getSightExtendInfo
   //       接替了但只返 393 字节短摘要，parser 不用，proactive 不调它。
   const PROACTIVE_ENDPOINTS = {
-    ADDINFO_URL:   "https://m.ctrip.com/restapi/soa2/12530/json/resourceAddInfo",
-    PRICE_CAL_URL: "https://m.ctrip.com/restapi/soa2/14580/json/getProductPriceCalendar",
+    ADDINFO_URL:         "https://m.ctrip.com/restapi/soa2/12530/json/resourceAddInfo",
+    PRICE_CAL_URL:       "https://m.ctrip.com/restapi/soa2/14580/json/getProductPriceCalendar",
+    RESOURCE_DETAIL_URL: "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails.json",
   };
   // 单轮主动 fire 的 resourceAddInfo 上限。详情页 shelf 通常 5-15 个 SKU，30 足够；
   // 同时也是防 server 429 / browser socket 耗尽。
   const PROACTIVE_ADDINFO_CAP = 20;
   // 两次 addInfo 之间的最小间隔（ms），避免瞬时风暴触发风控
   const PROACTIVE_STAGGER_MS = 80;
-  // 主动 fire 完后等待响应的最大时长
-  const PROACTIVE_WAIT_MS = 12000;
+  // 主动 fire 完后等待响应的最大时长（addInfo + priceCal + resourceDetails 三轮）
+  const PROACTIVE_WAIT_MS = 16000;
   function isCtripTarget(url) {
     if (!url) return false;
     for (const p of TARGET_PATHS) if (String(url).indexOf(p) !== -1) return true;
@@ -449,6 +450,37 @@
     };
   }
 
+  // resourceDetails (soa2/12314) payload — 单 rid 接口，响应 data.peopleProperty
+  // 给出该 rid 的人群标签（"成人票"/"儿童票"/"老人票"/"不限人群"）。
+  // 参考 ctrip_core/selectors.py:resource_detail_payload。
+  function resourceDetailPayload(rid, poiIdStr) {
+    return {
+      resourceId: Number(rid),
+      filters: [{ type: "DateFilter", filterItems: [{ key: "Date", value: "" }] }],
+      tags: [
+        { key: "needRateLimit", value: "T" },
+        { key: "needPackingVersion3", value: "true" },
+        { key: "needForcedLogin", value: "T" },
+      ],
+      clientInfo: {
+        currency: "CNY",
+        locale: "zh-CN",
+        pageId: 10650097502,
+        channelId: 116,
+        extension: [
+          { name: "poiId", value: String(poiIdStr) },
+          { name: "needPackagingVersion3", value: "true" },
+        ],
+        oriSyscode: "09",
+        syscode: "09",
+        cid: "",
+        appPlatform: "",
+        ic_traceid: (crypto && crypto.randomUUID ? crypto.randomUUID() : ""),
+      },
+      enviroment: "PROD",
+    };
+  }
+
   function findShelfBody() {
     const captured = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
     const shelf = captured.find((r) => String(r.url).includes("getProductShelf"));
@@ -510,7 +542,7 @@
     }
 
     const capped = mineRids.slice(0, PROACTIVE_ADDINFO_CAP);
-    PROACTIVE_STATE.total = capped.length * 2; // addInfo + priceCalendar (每 rid × 2 calls)
+    PROACTIVE_STATE.total = capped.length * 3; // addInfo + priceCal + resourceDetails (每 rid × 3 calls)
 
     console.log(SENTINEL,
       `proactive fire start: viewid=${viewid} poiId=${poiId} resources=${capped.length}/${mineRids.length}`);
@@ -531,6 +563,18 @@
       fireOne(PROACTIVE_ENDPOINTS.PRICE_CAL_URL,
         priceCalendarPayload(capped[i].rid, poiId),
         "priceCal",
+        `rid=${capped[i].rid}`);
+      if (i < capped.length - 1) {
+        await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));
+      }
+    }
+
+    // resourceDetails × N：拿每 rid 的人群标签（成人/儿童/老人/不限人群），
+    // 解析后写入 sku_snapshot.people_property 和 price_day.people_property。
+    for (let i = 0; i < capped.length; i++) {
+      fireOne(PROACTIVE_ENDPOINTS.RESOURCE_DETAIL_URL,
+        resourceDetailPayload(capped[i].rid, poiId),
+        "resourceDetail",
         `rid=${capped[i].rid}`);
       if (i < capped.length - 1) {
         await new Promise((r) => setTimeout(r, PROACTIVE_STAGGER_MS));

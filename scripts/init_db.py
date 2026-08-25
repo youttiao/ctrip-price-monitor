@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS sku_snapshot (
     market_price    REAL,
     first_booking_date TEXT,
     sale_count      INTEGER,
+    parent_resource_id INTEGER,           -- 可选人群父 SKU rid（priceCal 出的子人群 rid）
+    people_property TEXT,                 -- "成人票"/"儿童票"/"不限人群"…
     raw_resource    TEXT,
     FOREIGN KEY (round_id) REFERENCES rounds(id) ON DELETE CASCADE,
     UNIQUE(round_id, resource_id)
@@ -70,6 +72,7 @@ CREATE TABLE IF NOT EXISTS price_day (
     inventory       INTEGER,
     available       INTEGER,
     package_id      INTEGER,
+    people_property TEXT,                 -- 从 sku_snapshot 或 resourceDetails 注入，便于查询
     raw             TEXT,
     FOREIGN KEY (round_id) REFERENCES rounds(id) ON DELETE CASCADE,
     UNIQUE(round_id, resource_id, sale_date, package_id)
@@ -268,6 +271,41 @@ def main():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    conn.commit()
+
+    # ── 幂等迁移：给老 DB 补加 parent_resource_id / people_property 列 + backfill ──
+    #   SQLite 没有 IF NOT EXISTS 列语法，PRAGMA table_info 列出来判断后再 ALTER。
+    def _ensure_col(table: str, col: str, decl: str):
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        if any(row[1] == col for row in cur.fetchall()):
+            return False
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        print(f"  · migrated: ALTER TABLE {table} ADD COLUMN {col}")
+        return True
+
+    migrated = False
+    migrated |= _ensure_col("sku_snapshot", "parent_resource_id", "INTEGER")
+    migrated |= _ensure_col("sku_snapshot", "people_property", "TEXT")
+    migrated |= _ensure_col("price_day", "people_property", "TEXT")
+
+    # 补建 sku_snapshot 上的 parent_resource_id 索引（IF NOT EXISTS 幂等）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sku_parent ON sku_snapshot(parent_resource_id)")
+
+    # ── backfill 老数据：从 raw_resource 里抽 minPriceRelationInfo 反推父子关系 ──
+    #   仅作用于 "父 SKU 资源"（即 minPriceRelationInfo.resourceId != 自己，且指向本 POI 其他 rid）。
+    #   这些行原来就是 "可选人群" 的容器，本身不在 sku_snapshot 里作为子人群输出，
+    #   但 backfill 后 parent_resource_id 可被 dashboard 用于聚合展示。
+    backfill = conn.execute("""
+        UPDATE sku_snapshot
+        SET parent_resource_id = json_extract(raw_resource, '$.minPriceRelationInfo.resourceId'),
+            people_property    = json_extract(raw_resource, '$.minPriceRelationInfo.peoplePropertyName')
+        WHERE parent_resource_id IS NULL
+          AND json_extract(raw_resource, '$.minPriceRelationInfo.resourceId') IS NOT NULL
+          AND CAST(json_extract(raw_resource, '$.minPriceRelationInfo.resourceId') AS INTEGER) != resource_id
+    """).rowcount
+    if backfill:
+        print(f"  · backfilled {backfill} sku rows with parent_resource_id from minPriceRelationInfo")
+
     conn.commit()
 
     now = datetime.now(timezone.utc).isoformat()
