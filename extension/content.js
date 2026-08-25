@@ -135,10 +135,13 @@
 
     // Phase 2: 主动 fire overview + resourceAddInfo × N（页面 SPA 不会主动发，
     //          否则只有 shelf → parser 走 fallback，vendorId 全是 0）
+    // force: true — popup "再抓一轮" 显式点 = 用户要再抓，绕开 sessionStorage 日锁。
+    // 否则当天第二次点会 reason="already_fired_today"，Phase 4.5 sibling fan-out
+    // 永远不跑，dashboard join 时 chip 拆出来的学生/儿童 rid 整行不显示。
     let proactive = null;
     if (window.__ctrip_sentry_proactive_fire) {
       try {
-        proactive = await window.__ctrip_sentry_proactive_fire(viewid);
+        proactive = await window.__ctrip_sentry_proactive_fire(viewid, { force: true });
         console.log(SENTINEL, "proactive fire result", proactive);
       } catch (e) {
         console.warn(SENTINEL, "proactive fire threw", e);
