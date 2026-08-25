@@ -535,3 +535,103 @@ def test_parse_round_price_day_inherits_people_from_shelf_resource_list():
     assert 102 in days_by_rid
     # price_day 行 people_property 应该来自 crowd_map（因为没 resourceDetails）
     assert days_by_rid[102]["people_property"] == "儿童票"
+
+
+# ── vendor_map 部分（WAF 限速）但 shelf_lookup 全：sibling crowd 不能丢 ──
+
+
+def synthetic_shelf_three_children() -> dict:
+    """shelf 一次返所有 sibling crowd（实测 5208/圆明园就是这个形态）。
+
+    rid=101 成人 / rid=102 儿童 / rid=103 老人 同 L1；shelves[].propertyIdList 不存在
+    （新 API 已把 sibling 直接展开到 resources[]）。
+    """
+    return {
+        "poiId": POI_ID,
+        "spotid": VIEWID,
+        "resources": [
+            {
+                "id": 101, "resourceId": 101,
+                "fullName": "圆明园通票+智旅手册成人票",
+                "productIds": [501], "level1SaleUnitId": 9002,
+                "spotid": VIEWID, "displayPrice": 34,
+                "minPriceRelationInfo": {"resourceId": 101, "productId": 501,
+                                         "peoplePropertyName": "成人票"},
+            },
+            {
+                "id": 102, "resourceId": 102,
+                "fullName": "圆明园通票+智旅手册儿童票",
+                "productIds": [502], "level1SaleUnitId": 9002,
+                "spotid": VIEWID, "displayPrice": 9,
+                "minPriceRelationInfo": {"resourceId": 102, "productId": 502,
+                                         "peoplePropertyName": "儿童票"},
+            },
+            {
+                "id": 103, "resourceId": 103,
+                "fullName": "圆明园通票+智旅手册老人票",
+                "productIds": [503], "level1SaleUnitId": 9002,
+                "spotid": VIEWID, "displayPrice": 17,
+                "minPriceRelationInfo": {"resourceId": 103, "productId": 503,
+                                         "peoplePropertyName": "老人票"},
+            },
+        ],
+        "shelfGroups": [{"id": "sg-1", "ticketGroups": [{"id": 9002}]}],
+        "shelfTypes": [{"id": 7, "name": "门票",
+                         "shelfItems": [{"shelfGroupId": "sg-1"}]}],
+    }
+
+
+def synthetic_addinfo_one_success() -> list[dict]:
+    """扩展主动 fire addInfo：WAF 限速，19/20 返 430，1/20 返 200。
+
+    实测 2026-08-25 m.ctrip.com 用 3s stagger 在 viewid=5208 也是这个比例。
+    parser 必须把 19 个 WAF 的 rid 当成"vendor 没拿到"走 shelf fallback 出 SKU，
+    不能因为 vendor_map 里有 1 个成功就把整段 fallback `elif` 跳过。
+    """
+    # 只为 rid=101 返回 addInfo 200，其余全部空 body（=WAF 拦的占位）
+    return [
+        {
+            "data": {
+                "resources": [{
+                    "id": 101,
+                    "name": "圆明园通票+智旅手册(可选人群)",
+                    "vendorInfo": {"vendorId": 900001, "name": "官方旗舰店",
+                                     "brandCompanyName": "Ctrip", "licenceNo": "L1",
+                                     "licencePicUrl": ""},
+                }],
+            },
+            "ResponseStatus": {"Ack": "Success"},
+        },
+    ]
+
+
+def test_parse_round_keeps_sibling_when_addinfo_waf_blocked():
+    """vendor_map 只有一个 WAF 漏网的 rid（102/103 没 vendor），但 shelf_lookup 有 3 个。
+
+    修复前：elif shelf_lookup 分支被跳过 → 只有 1 个 SKU；sibling crowd 102/103 丢失。
+    修复后：先走 vendor_map 主路径出 rid=101，再用 shelf_lookup 兜底出 102/103。
+    """
+    raw = {
+        "capturedAt": "2026-08-25T12:00:00.000Z",
+        "poi": {"viewid": VIEWID, "name": "圆明园"},
+        "requests": [
+            {"url": "/restapi/soa2/21052/json/getProductShelf",
+             "ok": True, "body": synthetic_shelf_three_children()},
+            {"url": "/restapi/soa2/12530/json/resourceAddInfo",
+             "ok": True, "body": synthetic_addinfo_one_success()[0]},
+        ],
+        "cookies": {},
+    }
+    parsed = parse_round(raw)
+    by_rid = {s["resource_id"]: s for s in parsed["skus"]}
+    # 三个 sibling crowd child rid 都得出 SKU
+    assert set(by_rid.keys()) == {101, 102, 103}, f"missing rids: {set(by_rid.keys()) ^ {101, 102, 103}}"
+    # 101 有 vendor
+    assert by_rid[101]["primary_vendor_id"] == 900001
+    assert by_rid[101]["primary_vendor_name"] == "官方旗舰店"
+    # 102/103 vendor 字段为 0 但完整有 name + people_property
+    assert by_rid[102]["primary_vendor_id"] == 0
+    assert by_rid[102]["people_property"] == "儿童票"
+    assert by_rid[102]["full_name"] == "圆明园通票+智旅手册儿童票"
+    assert by_rid[103]["people_property"] == "老人票"
+    assert by_rid[103]["full_name"] == "圆明园通票+智旅手册老人票"

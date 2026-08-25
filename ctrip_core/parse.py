@@ -66,6 +66,7 @@ def parse_round(raw_round: dict) -> dict:
 
     # 5. 组装 SKU 列表
     skus = []
+    covered = set()
     if vendor_map:
         # 正常路径：addInfo + shelf 都有，按 vendor 主键 join
         for rid, info in vendor_map.items():
@@ -98,35 +99,39 @@ def parse_round(raw_round: dict) -> dict:
                 "people_property": people,
                 "raw_resource": shelf.get("raw"),
             })
-    elif shelf_lookup:
-        # Fallback：addInfo 没拿到（扩展只截到 getProductShelf 的常见情况）。
-        # 仍然输出 SKU 行，但 vendor 字段为 None，让 dashboard 能看到货架结构。
-        # 等 server 端后续补抓 addInfo 后可升级为完整 vendor 信息。
-        for rid, shelf in shelf_lookup.items():
-            crowd = crowd_map.get(rid) or {}
-            people = (people_map.get(rid)
-                      or crowd.get("people_property")
-                      or shelf.get("people_property"))
-            parent_rid = shelf.get("parent_resource_id")
-            srl_name = crowd.get("name")
-            skus.append({
-                "resource_id": rid,
-                "primary_vendor_id": 0,  # 未抓到 addInfo 的占位
-                "primary_vendor_name": None,
-                "primary_vendor_brand": None,
-                "primary_vendor_licence": None,
-                "primary_vendor_licence_pic": None,
-                "display_price": shelf.get("display_price"),
-                "full_name": _build_sku_name(shelf_lookup, rid, people,
-                                              srl_name or shelf.get("full_name")),
-                "shelf_type_id": shelf.get("shelf_type_id"),
-                "shelf_type_name": shelf.get("shelf_type_name"),
-                "spotid": shelf.get("spotid") or viewid,
-                "market_price": shelf.get("market_price"),
-                "first_booking_date": shelf.get("first_booking_date"),
-                "sale_count": shelf.get("sale_count"),
-                "parent_resource_id": parent_rid,
-                "people_property": people,
+            covered.add(rid)
+
+    # Fallback / 补全：shelf 里出现但 vendor_map 没有的 rid（addInfo WAF 限速漏抓 → 没 vendor）
+    # 仍然出 SKU 行，vendor 字段为 None，让 dashboard 能看到货架结构和人群分布。
+    # 注意：之前是 `elif shelf_lookup`，意味着 vendor_map 只要有 ≥1 项就跳过整段 — sibling
+    # crowd child rid（e.g. 110268325）会被悄悄丢弃。已修。
+    for rid, shelf in shelf_lookup.items():
+        if rid in covered:
+            continue
+        crowd = crowd_map.get(rid) or {}
+        people = (people_map.get(rid)
+                  or crowd.get("people_property")
+                  or shelf.get("people_property"))
+        parent_rid = shelf.get("parent_resource_id")
+        srl_name = crowd.get("name")
+        skus.append({
+            "resource_id": rid,
+            "primary_vendor_id": 0,  # 未抓到 addInfo 的占位
+            "primary_vendor_name": None,
+            "primary_vendor_brand": None,
+            "primary_vendor_licence": None,
+            "primary_vendor_licence_pic": None,
+            "display_price": shelf.get("display_price"),
+            "full_name": _build_sku_name(shelf_lookup, rid, people,
+                                          srl_name or shelf.get("full_name")),
+            "shelf_type_id": shelf.get("shelf_type_id"),
+            "shelf_type_name": shelf.get("shelf_type_name"),
+            "spotid": shelf.get("spotid") or viewid,
+            "market_price": shelf.get("market_price"),
+            "first_booking_date": shelf.get("first_booking_date"),
+            "sale_count": shelf.get("sale_count"),
+            "parent_resource_id": parent_rid,
+            "people_property": people,
                 "raw_resource": shelf.get("raw"),
             })
 
