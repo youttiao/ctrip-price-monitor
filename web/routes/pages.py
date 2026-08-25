@@ -82,9 +82,24 @@ def index(request: Request):
         return RedirectResponse("/login", status_code=303)
 
     conn = request.app.state.db
+    start_offset, days = _resolve_window()
+    inner_offset = days - 1  # RECURSIVE 走 N-1 次，凑出 N 个日期
 
     # POI 列表（每个 POI 的最近状态）
-    pois = conn.execute("""
+    # watched_mine_slots: 落在 watchlist 内 shelfType 下、且 last_seen 7 天内的 rid
+    #     × 时间窗口里、winning_vendor_id ∈ my_vids 的 (rid, date) 对数。
+    # watched_rid_count: 上述 rid 总数（× days 就是总分母）。
+    pois = conn.execute(f"""
+        WITH RECURSIVE window_dates(sale_date, i) AS (
+            SELECT date('now', '+' || ? || ' days'), 0
+            UNION ALL
+            SELECT date(sale_date, '+1 day'), i+1 FROM window_dates WHERE i < ?
+        ),
+        last_parsed AS (
+            SELECT poi_viewid, MAX(id) AS rid
+            FROM rounds WHERE status='parsed'
+            GROUP BY poi_viewid
+        )
         SELECT p.viewid, p.name,
                (SELECT MAX(received_at) FROM rounds WHERE poi_viewid=p.viewid) AS last_received,
                (SELECT COUNT(*) FROM sku_snapshot s
@@ -95,11 +110,40 @@ def index(request: Request):
                   JOIN rounds r ON r.id=s.round_id
                   JOIN my_vendors m ON m.vendor_id=s.primary_vendor_id AND m.is_active=1
                   WHERE s.poi_viewid=p.viewid
-                    AND r.id=(SELECT MAX(id) FROM rounds WHERE poi_viewid=p.viewid)) AS last_mine_count
+                    AND r.id=(SELECT MAX(id) FROM rounds WHERE poi_viewid=p.viewid)) AS last_mine_count,
+               (SELECT COUNT(*) FROM ticket_meta t
+                  JOIN watchlist w ON w.user_id=? AND w.poi_viewid=t.poi_viewid
+                                  AND w.shelf_type_id=t.shelf_type_id
+                  WHERE t.poi_viewid=p.viewid
+                    AND t.last_seen_at > datetime('now','-7 days')) AS watched_rid_count,
+               (SELECT COUNT(*) FROM ticket_meta t
+                  JOIN watchlist w ON w.user_id=? AND w.poi_viewid=t.poi_viewid
+                                  AND w.shelf_type_id=t.shelf_type_id
+                  CROSS JOIN window_dates wd
+                  JOIN price_day pd ON pd.resource_id=t.resource_id
+                                    AND pd.sale_date=wd.sale_date
+                                    AND pd.poi_viewid=t.poi_viewid
+                  JOIN my_vendors m ON m.vendor_id=pd.winning_vendor_id AND m.is_active=1
+                  WHERE t.poi_viewid=p.viewid
+                    AND t.last_seen_at > datetime('now','-7 days')
+                    AND pd.round_id=(SELECT rid FROM last_parsed WHERE poi_viewid=p.viewid)) AS watched_mine_slots
         FROM pois p
         WHERE p.enabled=1
         ORDER BY p.viewid
-    """).fetchall()
+    """, (start_offset, inner_offset, user["user_id"], user["user_id"])).fetchall()
+
+    # 给每个 POI 算分母 / 分子 / 百分比，分母=0 时显示 —
+    enriched = []
+    for p in pois:
+        d = dict(p)
+        wr = d.get("watched_rid_count") or 0
+        ws = d.get("watched_mine_slots") or 0
+        total_slots = wr * days
+        d["watched_total"] = total_slots
+        d["watched_mine"] = ws
+        d["watched_ratio"] = (ws / total_slots) if total_slots > 0 else None
+        d["window_days"] = days
+        enriched.append(d)
 
     # 我的 vendorIds
     my_vids = [r["vendor_id"] for r in conn.execute(
@@ -116,8 +160,8 @@ def index(request: Request):
         "SELECT COUNT(*) FROM watchlist WHERE user_id=?", (user["user_id"],)
     ).fetchone()[0]
 
-    return _render(request, "index.html", pois=pois, my_vids=my_vids,
-                   alerts=alerts, wl_count=wl_count)
+    return _render(request, "index.html", pois=enriched, my_vids=my_vids,
+                   alerts=alerts, wl_count=wl_count, window_days=days)
 
 
 @router.get("/poi/{viewid}", response_class=HTMLResponse)

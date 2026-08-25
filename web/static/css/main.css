@@ -412,6 +412,11 @@ code {
 }
 .poi-card .statline .stat .v { color: var(--ink); font-weight: 500; }
 .poi-card .statline .stat .v.mine { color: var(--seal); }
+.poi-card .statline .stat .v.dim { color: var(--ink-3); }
+.poi-card .statline .stat .v .pct { font-size: var(--fs-xs); margin-left: 2px; opacity: .85; }
+.poi-card .statline .stat .v.ratio-good { color: var(--moss); }
+.poi-card .statline .stat .v.ratio-mid  { color: var(--amber); }
+.poi-card .statline .stat .v.ratio-bad  { color: var(--crimson); }
 .poi-card .statline .stat .k {
   display: block;
   font-family: var(--font-display);

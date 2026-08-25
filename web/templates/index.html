@@ -139,6 +139,25 @@
           <span class="k">我的</span>
           <span class="v mine">{{ p.last_mine_count or 0 }}</span>
         </div>
+        {% if p.registered_count and p.registered_count > (p.last_sku_count or 0) %}
+        <div class="stat" title="ticket_meta 注册的票种, 比本轮抓到多 = 历史轮有, 本轮 round 没抓到">
+          <span class="k dim">注册</span>
+          <span class="v dim" style="color:var(--amber)">{{ p.registered_count }}</span>
+        </div>
+        {% endif %}
+        {% set wd = p.window_days or 7 %}
+        <div class="stat"
+             title="我关注的 shelfType 下的 rid 在 {{ wd }} 天窗口里, 实际被我抢到 winning 的格子占比">
+          <span class="k">占比</span>
+          {% if p.watched_total and p.watched_total > 0 %}
+            {% set pct = (p.watched_mine / p.watched_total * 100) | round(0, 'floor') | int %}
+            <span class="v {% if pct >= 60 %}ratio-good{% elif pct >= 30 %}ratio-mid{% else %}ratio-bad{% endif %}">
+              {{ p.watched_mine }}/{{ p.watched_total }} <span class="pct">{{ pct }}%</span>
+            </span>
+          {% else %}
+            <span class="v dim">—</span>
+          {% endif %}
+        </div>
       </div>
     </a>
     {% endfor %}
