@@ -364,6 +364,138 @@ table.cal tbody tr:nth-child(2n) td:nth-child(4n) .seal-cell { transform: rotate
 
 .seal-cell.today { outline-width: 2.5px; }
 
+/* ============================================================
+   Sentry tip — hover 哨记弹窗
+   - 复用 seal-cell 的视觉语汇：纸色卡 + 朱印主线 + 墨框
+   - 指针是小朱印方块，模仿 masthead chop 的旋转方块
+   - 左边框按 cell 状态着色（moss / seal / ink-3）
+   ============================================================ */
+.sentry-tip {
+  position: fixed;
+  z-index: 100;
+  min-width: 240px;
+  max-width: 320px;
+  padding: 12px 16px 10px;
+  background: var(--card);
+  border: 1.5px solid var(--ink);
+  box-shadow:
+    inset 0 0 0 1px var(--paper),
+    1px 2px 0 rgba(26,24,20,.18),
+    4px 8px 0 rgba(26,24,20,.08);
+  font-family: var(--font-hand);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity .12s ease, transform .12s ease;
+}
+.sentry-tip.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+.sentry-tip.is-mine          { border-left: 4px solid var(--moss); }
+.sentry-tip.is-watched-them  { border-left: 4px solid var(--seal); }
+.sentry-tip.is-unwatched-them{ border-left: 4px solid var(--ink-3); }
+.sentry-tip.is-empty         { border-left: 4px dashed var(--rule); }
+
+/* 朱印小戳指针 — 旋转方块，呼应 masthead chop */
+.sentry-tip .tip-arrow {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  width: 12px; height: 12px;
+  background: var(--seal);
+  transform: translateX(-50%) rotate(45deg);
+  box-shadow: 1px 1px 0 rgba(26,24,20,.18);
+}
+.sentry-tip.flip .tip-arrow {
+  bottom: auto;
+  top: -7px;
+}
+
+.sentry-tip .tip-hdr {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin: -2px 0 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--rule);
+  display: flex; align-items: center; gap: 6px;
+}
+.sentry-tip .tip-hdr .glyph {
+  display: inline-block;
+  width: 8px; height: 8px;
+  background: var(--seal);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sentry-tip .tip-name {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: var(--fs-md);
+  color: var(--ink);
+  letter-spacing: .02em;
+  margin-bottom: 1px;
+}
+.sentry-tip .tip-brand {
+  font-family: var(--font-hand);
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+  font-style: italic;
+}
+.sentry-tip .tip-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  margin-bottom: 6px;
+  letter-spacing: .02em;
+}
+.sentry-tip .tip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  margin: 4px 0 8px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--rule);
+  align-items: baseline;
+}
+.sentry-tip .tip-meta .price {
+  font-family: var(--font-display);
+  font-weight: 900;
+  color: var(--ink);
+  font-size: var(--fs-lg);
+  letter-spacing: -0.02em;
+}
+.sentry-tip .tip-meta .inv {
+  color: var(--ink-2);
+}
+.sentry-tip .tip-meta .rid {
+  color: var(--ink-3);
+}
+.sentry-tip .tip-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: .12em;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+  text-transform: uppercase;
+}
+.sentry-tip .tip-badge-row {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+
 /* ── 图例 ── */
 .legend {
   margin-top: var(--sp-4); padding-top: var(--sp-3);

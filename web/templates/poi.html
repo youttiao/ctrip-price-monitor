@@ -244,24 +244,40 @@
                       {% set cell_kind = 'seal-empty' %}
                     {% endif %}
                     {% set today_cls = ' today' if d.is_today else '' %}
+                    {% set vn = cell.winning_vendor_name if cell else '' %}
+                    {% set vb = cell.winning_vendor_brand if cell else '' %}
+                    {% set vl = cell.winning_vendor_licence if cell else '' %}
+                    {% set inv = cell.inventory if cell else '' %}
+                    {% set cstate = cell.state if cell else 'empty' %}
                     <td>
                       {% if sp %}
-                        {% if is_mine %}
-                          {% set title = (v_name or 'vendor') ~ ' · vid ' ~ v_id ~ ' · ¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso ~ ' · ★ 我的供应商' %}
-                        {% elif has_vid %}
-                          {% set title = (v_name or 'vendor') ~ ' · vid ' ~ v_id ~ ' · ¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso ~ (' · 我关注的票种被抢' if is_watched_shelf else '') %}
-                        {% else %}
-                          {% set title = '¥' ~ ('%.0f'|format(sp)) ~ ' · ' ~ d.iso %}
-                        {% endif %}
                         <div class="seal-cell {{ heat }}{{ today_cls }} {{ cell_kind }}{% if is_sold_out %} sold-out{% endif %}"
-                             title="{{ title }}">
+                             data-date="{{ d.iso }}"
+                             data-price="{{ '%.0f'|format(sp) }}"
+                             data-vendor-id="{{ v_id if v_id is not none else '' }}"
+                             data-vendor-name="{{ vn or '' }}"
+                             data-vendor-brand="{{ vb or '' }}"
+                             data-vendor-licence="{{ vl or '' }}"
+                             data-resource-id="{{ t.resource_id }}"
+                             data-inventory="{{ inv if inv is not none else '' }}"
+                             data-state="{{ cstate }}">
                           <div class="price">¥{{ '%.0f'|format(sp) }}</div>
                           {% if is_mine %}
                             <span class="mine-mark" aria-label="我的供应商">★</span>
                           {% endif %}
                         </div>
                       {% else %}
-                        <div class="seal-cell seal-empty{{ today_cls }}" title="无数据 · {{ d.iso }}">
+                        <div class="seal-cell seal-empty{{ today_cls }}"
+                             data-date="{{ d.iso }}"
+                             data-price=""
+                             data-vendor-id=""
+                             data-vendor-name=""
+                             data-vendor-brand=""
+                             data-vendor-licence=""
+                             data-resource-id="{{ t.resource_id }}"
+                             data-inventory=""
+                             data-state="empty"
+                             title="无数据 · {{ d.iso }}">
                           <div class="price">—</div>
                         </div>
                       {% endif %}
@@ -356,4 +372,159 @@
 </div>
 
 <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script>
+/* ============================================================
+   哨记 tooltip — hover 价签时浮出 vendor 信息卡
+   设计：朱印小戳指针 + 纸色卡 + 墨框 + 左边框按 cell 状态着色
+   ============================================================ */
+(function() {
+  const tip = document.createElement('div');
+  tip.className = 'sentry-tip';
+  const arrow = document.createElement('div');
+  arrow.className = 'tip-arrow';
+  tip.appendChild(arrow);
+  document.body.appendChild(tip);
+
+  let activeCell = null;
+  let hideTimer = null;
+  let raf = 0;
+
+  function show(cell) {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (cell === activeCell) return;
+    activeCell = cell;
+
+    const d = parseData(cell);
+    tip.innerHTML = '';
+    tip.appendChild(arrow);
+    tip.insertAdjacentHTML('beforeend', renderTip(d));
+    tip.className = 'sentry-tip ' + stateClass(d);
+
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      position(cell);
+      tip.classList.add('is-on');
+    });
+  }
+
+  function scheduleHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      tip.classList.remove('is-on');
+      activeCell = null;
+    }, 90);
+  }
+
+  function position(cell) {
+    tip.style.visibility = 'hidden';
+    tip.classList.add('is-on');
+    const tr = tip.getBoundingClientRect();
+    tip.classList.remove('is-on');
+    tip.style.visibility = '';
+
+    const r = cell.getBoundingClientRect();
+    const margin = 14;
+    let top = r.top - tr.height - margin;
+    const placeAbove = top >= 8;
+    if (!placeAbove) top = r.bottom + margin;
+    tip.classList.toggle('flip', !placeAbove);
+
+    let left = r.left + r.width/2 - tr.width/2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
+
+    tip.style.top = top + 'px';
+    tip.style.left = left + 'px';
+
+    // 戳指针随 cell 中心水平走（容许 tooltip 左右偏移）
+    const arrowX = r.left + r.width/2 - left;
+    const minX = 18, maxX = tr.width - 18;
+    const clamped = Math.max(minX, Math.min(arrowX, maxX));
+    arrow.style.left = (clamped - 6) + 'px';
+  }
+
+  function stateClass(d) {
+    if (d.isEmpty) return 'is-empty';
+    if (d.state === 'mine') return 'is-mine';
+    if (d.state === 'them') return 'is-watched-them';
+    return 'is-unwatched-them';
+  }
+
+  function parseData(cell) {
+    const ds = cell.dataset;
+    return {
+      date: ds.date || '',
+      price: ds.price || '',
+      vendorId: ds.vendorId || '',
+      vendorName: ds.vendorName || '',
+      vendorBrand: ds.vendorBrand || '',
+      vendorLicence: ds.vendorLicence || '',
+      resourceId: ds.resourceId || '',
+      inventory: ds.inventory || '',
+      state: ds.state || 'empty',
+      isEmpty: !ds.price,
+    };
+  }
+
+  function renderTip(d) {
+    if (d.isEmpty) {
+      return `
+        <div class="tip-hdr"><span class="glyph"></span>哨记 · ${esc(d.date)}</div>
+        <div class="tip-name">暂无报价</div>
+        <div class="tip-meta"><span class="inv">等待下一轮抓取…</span></div>
+      `;
+    }
+
+    const brand = (d.vendorBrand && d.vendorBrand !== d.vendorName)
+      ? `<div class="tip-brand">${esc(d.vendorBrand)}</div>` : '';
+
+    let badge = '';
+    if (d.state === 'mine') {
+      badge = '<span class="tip-badge" style="color:var(--moss)">★ 我的供应商</span>';
+    } else if (d.state === 'them') {
+      badge = '<span class="tip-badge" style="color:var(--seal)">⚑ 关注票种</span>';
+    } else {
+      badge = '<span class="tip-badge" style="color:var(--ink-3)">○ 单家报价</span>';
+    }
+    if (d.state === 'sold-out') {
+      badge += '<span class="tip-badge" style="color:var(--crimson)">售罄</span>';
+    }
+
+    return `
+      <div class="tip-hdr"><span class="glyph"></span>哨记 · ${esc(d.date)}</div>
+      <div class="tip-name">${esc(d.vendorName || '未知供应商')}</div>
+      ${brand}
+      <div class="tip-id">vid ${esc(d.vendorId)}${d.vendorLicence ? ' · ' + esc(d.vendorLicence) : ''}</div>
+      <div class="tip-meta">
+        <span class="price">¥${esc(d.price)}</span>
+        ${d.inventory ? '<span class="inv">库存 ' + esc(d.inventory) + '</span>' : ''}
+        <span class="rid">rid ${esc(d.resourceId)}</span>
+      </div>
+      <div class="tip-badge-row">${badge}</div>
+    `;
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  document.addEventListener('mouseover', e => {
+    const cell = e.target.closest('.seal-cell');
+    if (cell) show(cell);
+  });
+  document.addEventListener('mouseout', e => {
+    const cell = e.target.closest('.seal-cell');
+    if (cell && !cell.contains(e.relatedTarget)) scheduleHide();
+  });
+  // 滚动 / resize 时直接收起，避免错位
+  window.addEventListener('scroll', () => {
+    tip.classList.remove('is-on');
+    activeCell = null;
+  }, { capture: true, passive: true });
+  window.addEventListener('resize', () => {
+    tip.classList.remove('is-on');
+    activeCell = null;
+  });
+})();
+</script>
 {% endblock %}

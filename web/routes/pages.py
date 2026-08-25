@@ -225,7 +225,9 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
                s.shelf_type_id, s.shelf_type_name,
                s.sale_count,
                s.raw_resource,
-               v.name AS winning_vendor_name
+               v.name AS winning_vendor_name,
+               v.brand_company_name AS winning_vendor_brand,
+               v.licence_no AS winning_vendor_licence
         FROM price_day pd
         JOIN sku_snapshot s ON s.round_id=pd.round_id AND s.resource_id=pd.resource_id
         LEFT JOIN vendors v ON v.vendor_id=pd.winning_vendor_id
@@ -272,6 +274,8 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
             "min_price": r["min_price"],
             "winning_vendor_id": r["winning_vendor_id"],
             "winning_vendor_name": r["winning_vendor_name"],
+            "winning_vendor_brand": r["winning_vendor_brand"],
+            "winning_vendor_licence": r["winning_vendor_licence"],
             "available": r["available"],
             "package_id": r["package_id"],
         }
@@ -342,6 +346,9 @@ def _build_calendar_matrix(conn, round_id, viewid, my_vids, watched, days=7):
             cells.append({
                 "sale_price": sp,
                 "winning_vendor_id": vid,
+                "winning_vendor_name": cell.get("winning_vendor_name"),
+                "winning_vendor_brand": cell.get("winning_vendor_brand"),
+                "winning_vendor_licence": cell.get("winning_vendor_licence"),
                 "vendor_label": vendor_label,
                 "available": available,
                 "state": state,
