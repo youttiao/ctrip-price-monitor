@@ -341,11 +341,11 @@
 
     <div class="caveat">
       <span class="label">📜 数据契约批注</span>
-      <code>price_day</code> 当前只存 <code>package_id</code>，
-      winning_vendor_id 待 <code>priceCalendar</code> 拦截落地。
-      <br><br>
-      <span style="color:var(--ink-3)">进度：</span>扩展侧 <code>TARGET_PATHS</code> 已加，价格到 round_parser
-      拆多行后即生效。
+      <code>price_day.winning_vendor_id</code> 已从 <code>resourceAddInfo</code> 的
+      <code>vendorMap[rid]</code> 注入。
+      每格根据 (winning_vendor_id ∈ my_vids) 着色：
+      <code>is-mine-cell</code> 绿 / <code>is-watched-them</code> 红 /
+      <code>is-unwatched-them</code> 灰。
     </div>
 
   </aside>
