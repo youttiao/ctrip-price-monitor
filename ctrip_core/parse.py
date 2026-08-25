@@ -200,11 +200,14 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
        所以 parent_resource_id 暂不填 — 父子在 dashboard 通过 shelfType 自然聚合。
     """
     # Step 1: rid → level1SaleUnitId
+    # resourceId 是首选；但 2026-08 起部分 SKU（type=7 旅拍 / type=11 儿童票）只有 id
+    # 没 resourceId，落到 id=None 会被无声丢，dashboard 看不到这些 SKU。所以先尝试
+    # resourceId，再退到 id。id 仍为 None 的是 type=14 占位（"需通过公众号购票入园"），跳过。
     rid_to_l1: dict[int, dict] = {}
     for r in shelf_body.get("resources", []) or []:
         if r.get("spotid") != viewid:
             continue
-        rid = r.get("resourceId")
+        rid = r.get("resourceId") or r.get("id")
         if not rid:
             continue
         rid_to_l1[rid] = {
@@ -242,6 +245,21 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
             sg_id = item.get("shelfGroupId")
             if sg_id and st_id is not None:
                 shelf_group_to_type[sg_id] = (st_id, st_name)
+
+    # Step 3.5: 兜底 — 若 shelfTypes 整段缺失（API 灰度/WAF 降级返空），
+    # 把每个 shelfGroup 视为自己的 shelfType：用 groupId 作 st_id、groupName 作 st_name。
+    # 否则关联链 rid → level1SaleUnitId → ticketGroup.id → shelfGroup.id → shelfTypes[].id
+    # 在最后一步断掉，所有 rid 落到 shelf 0 → "（未分组）"。
+    # 触发条件：shelfTypes 为空 + 至少一个 shelfGroup 有 groupId。
+    if not shelf_group_to_type:
+        for sg in shelf_body.get("shelfGroups", []) or []:
+            sg_id = sg.get("id")
+            gid = sg.get("groupId")
+            if not sg_id or gid is None or gid == 0:
+                continue
+            if sg_id in shelf_group_to_type:
+                continue
+            shelf_group_to_type[sg_id] = (gid, sg.get("groupName") or "（未命名）")
 
     # 关联 rid → shelfType
     for rid, info in rid_to_l1.items():
