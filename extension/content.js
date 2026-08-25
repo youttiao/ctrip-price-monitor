@@ -1,115 +1,166 @@
-// content script — 注入到 m.ctrip.com/*
-// 策略：用 PerformanceObserver 捕获 soa2 请求/响应。
-// 因为 soa2 调用有 w-payload-source + 必须从浏览器发出，我们只能在浏览器侧抓。
+// content script — 注入到 https://*.ctrip.com/*
+// 策略：劫持 fetch + XHR 拿 soa2 响应体。
+//
+// 关键难点：Ctrip H5 SDK 在 document_start 之后异步模块里
+//   `window.fetch = theirown` （用 data descriptor，不是 accessor）。
+//   所以 defineProperty 拦截完全失效，只能靠轮询重新覆盖。
+//   为了不让 wrapper 自己递归调用，我们必须在脚本最一开始就锁住
+//   「最原子的 fetch」引用（此时它就是浏览器原生 fetch），之后永远用它。
+//
+// 时机：manifest 已声明 run_at=document_start。
 
 (function () {
-  const TARGET_HOST = "m.ctrip.com";
-  const SHELF_PATH = "/restapi/soa2/21052/json/getProductShelf";
-  const ADDINFO_PATH = "/restapi/soa2/12530/json/resourceAddInfo";
-  const SEARCH_PATH = "/restapi/h5api/globalsearch/search";
+  const SENTINEL = "[ctrip-sentry:v0.2.3-2]";
+  console.log(SENTINEL, "loading on", location.href);
+  const TARGET_PATHS = [
+    "/restapi/soa2/21052/json/getProductShelf",
+    "/restapi/soa2/12530/json/resourceAddInfo",
+    "/restapi/h5api/globalsearch/search",
+  ];
 
-  /** @type { Map<string, { url: string, method: string, postData?: string, startedAt: number }> } */
+  function isCtripTarget(url) {
+    if (!url) return false;
+    for (const p of TARGET_PATHS) if (url.includes(p)) return true;
+    return false;
+  }
+
+  /** @type { Map<string, any> } */
   const inflight = new Map();
-  /** 当前 POI context（从 URL 推断） */
   let currentPOI = null;
 
   function detectPOIFromURL() {
     const u = new URL(location.href);
-    const path = u.pathname + u.search;
-    // 1) query ?viewId=
     const q = u.searchParams.get("viewId");
-    if (q && /^\d+$/.test(q)) return { viewid: +q, name: "", source: "query" };
-    // 2) path: /sight/233.html 之类的
-    const m = path.match(/\/(\d{2,6})/);
+    if (q && /^\d+$/.test(q)) return { viewid: +q, name: document.title || "", source: "query" };
+    const m = (u.pathname + u.search).match(/\/(\d{2,6})/);
     if (m) return { viewid: +m[1], name: document.title || "", source: "path" };
     return null;
   }
 
-  function shouldCapture() {
-    return location.host.includes(TARGET_HOST);
-  }
+  // ---- 在 document_start 锁定「最原子的 fetch / XHR.open / XHR.send」 ----
+  // 此时还没有任何页面脚本（document_start 是最早注入点）。
+  const realFetch = window.fetch.bind(window);
+  const realXHROpen = XMLHttpRequest.prototype.open;
+  const realXHRSend = XMLHttpRequest.prototype.send;
 
-  async function readResponseBody(response) {
+  // 给 wrapped 函数挂 marker
+  function markWrapped(fn) {
     try {
-      // response.clone() 防止 stream 被消费
-      return await response.clone().text();
+      Object.defineProperty(fn, "__ctrip_sentry_wrapped", { value: true, configurable: false });
     } catch (_) {
-      return "";
+      fn.__ctrip_sentry_wrapped = true;
     }
+    return fn;
   }
 
-  function installPerfObserver() {
-    if (!window.PerformanceObserver) return;
+  // ---- fetch wrapper ----
+  function makePatchedFetch() {
+    const patched = function (input, init) {
+      const url = (typeof input === "string" ? input : input?.url) || "";
+      const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
+      const startedAt = Date.now();
+      const postData = init && init.body ? String(init.body) : undefined;
+      const key = method + " " + url + " " + startedAt;
+      inflight.set(key, { url, method, postData, startedAt });
+      let resp;
+      try {
+        resp = realFetch(input, init);
+      } catch (e) {
+        const m = inflight.get(key);
+        if (m) m.error = String(e);
+        throw e;
+      }
+      if (isCtripTarget(url) && resp && typeof resp.then === "function") {
+        Promise.resolve(resp).then(async (r) => {
+          try {
+            const text = await r.clone().text();
+            const m = inflight.get(key);
+            if (m) { m.responseBody = text; m.responseStatus = r.status; }
+          } catch (_) {}
+        });
+      }
+      return resp;
+    };
+    return markWrapped(patched);
+  }
+
+  function installFetchHook() {
+    if (window.fetch && window.fetch.__ctrip_sentry_wrapped) return;
     try {
-      const obs = new PerformanceObserver(async (list) => {
-        for (const entry of list.getEntries()) {
-          // PerformanceResourceEntry 没有 body，但有 timing + name
-          // 我们仍记录请求；响应体在 fetch hook 里取
-        }
-      });
-      obs.observe({ type: "resource", buffered: true });
+      window.fetch = makePatchedFetch();
     } catch (_) {}
   }
 
-  // 劫持 fetch + XHR（这是拿 body 的唯一办法）
-  function hookFetch() {
-    const origFetch = window.fetch;
-    window.fetch = async function patchedFetch(input, init) {
-      const url = (typeof input === "string" ? input : input?.url) || "";
-      const method = (init?.method || "GET").toUpperCase();
-      const startedAt = Date.now();
-      const postData = init?.body ? String(init.body) : undefined;
-      const key = method + " " + url + " " + startedAt;
-      inflight.set(key, { url, method, postData, startedAt });
-
-      try {
-        const resp = await origFetch.apply(this, arguments);
-        // 仅关心 soa2 路径
-        if (url.includes("/restapi/soa2/21052/json/getProductShelf") ||
-            url.includes("/restapi/soa2/12530/json/resourceAddInfo") ||
-            url.includes("/restapi/h5api/globalsearch/search")) {
-          const text = await readResponseBody(resp);
-          inflight.get(key).responseBody = text;
-          inflight.get(key).responseStatus = resp.status;
-        }
-        return resp;
-      } catch (e) {
-        inflight.get(key).error = String(e);
-        throw e;
-      }
+  // ---- XHR wrapper ----
+  function makePatchedXHROpen() {
+    const patched = function (method, url) {
+      this.__ctrip = { method, url: String(url), startedAt: Date.now(), postData: undefined };
+      return realXHROpen.apply(this, arguments);
     };
+    return markWrapped(patched);
   }
-
-  function hookXHR() {
-    const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (method, url) {
-      this.__ctrip = { method, url, startedAt: Date.now(), postData: undefined };
-      return origOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function (body) {
-      const meta = this.__ctrip || {};
-      meta.postData = body ? String(body) : undefined;
+  function makePatchedXHRSend() {
+    const patched = function (body) {
+      const meta = this.__ctrip || (this.__ctrip = {});
+      if (body) meta.postData = String(body);
       const self = this;
       this.addEventListener("loadend", function () {
         if (!meta.url) return;
-        if (meta.url.includes("/restapi/soa2/21052/json/getProductShelf") ||
-            meta.url.includes("/restapi/soa2/12530/json/resourceAddInfo") ||
-            meta.url.includes("/restapi/h5api/globalsearch/search")) {
-          meta.responseBody = self.responseText;
-          meta.responseStatus = self.status;
-        }
+        if (!isCtripTarget(meta.url)) return;
+        meta.responseBody = self.responseText;
+        meta.responseStatus = self.status;
       });
-      return origSend.apply(this, arguments);
+      return realXHRSend.apply(this, arguments);
     };
+    return markWrapped(patched);
+  }
+  function installXHRHooks() {
+    if (XMLHttpRequest.prototype.open.__ctrip_sentry_wrapped) return;
+    try {
+      XMLHttpRequest.prototype.open = makePatchedXHROpen();
+    } catch (_) {}
+    try {
+      XMLHttpRequest.prototype.send = makePatchedXHRSend();
+    } catch (_) {}
   }
 
-  /** 收集一个 round 并上传。 */
-  async function captureAndUpload() {
-    if (!shouldCapture()) return { ok: false, reason: "not_ctrip" };
+  // 立刻装
+  installFetchHook();
+  installXHRHooks();
 
-    // 等待最近请求完成（最多 2s）
-    await new Promise((r) => setTimeout(r, 1500));
+  // 早期密集轮询（前 15s，每 100ms 检查一次）
+  let n = 0;
+  const earlyId = setInterval(() => {
+    installFetchHook();
+    installXHRHooks();
+    if (++n >= 150) clearInterval(earlyId);
+  }, 100);
+
+  // 之后每 2s 检查一次（Ctrip 偶尔会再覆盖）
+  setInterval(() => {
+    installFetchHook();
+    installXHRHooks();
+  }, 2000);
+
+  // SDK 加载完可能会再触发一轮
+  document.addEventListener("DOMContentLoaded", () => { installFetchHook(); installXHRHooks(); });
+  window.addEventListener("load", () => { installFetchHook(); installXHRHooks(); });
+
+  // ---- capture + upload ----
+
+  async function captureAndUpload() {
+    if (!location.host.includes("ctrip.com")) return { ok: false, reason: "not_ctrip" };
+
+    // 等最近一波请求完成（最多 3s）
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      let anyInflight = false;
+      for (const [, m] of inflight) {
+        if (m.startedAt + 2500 > Date.now() && !m.responseBody && !m.error) { anyInflight = true; break; }
+      }
+      if (!anyInflight) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
 
     currentPOI = detectPOIFromURL();
     if (!currentPOI) return { ok: false, reason: "no_poi_in_url" };
@@ -117,25 +168,17 @@
     const reqs = [];
     for (const [, meta] of inflight) {
       if (!meta.responseBody) continue;
-      try {
-        reqs.push({
-          url: meta.url,
-          method: meta.method,
-          postData: meta.postData ? { text: meta.postData } : undefined,
-          response: { status: meta.responseStatus, bodyText: meta.responseBody },
-        });
-      } catch (_) {}
+      reqs.push({
+        url: meta.url,
+        method: meta.method,
+        postData: meta.postData ? { text: meta.postData } : undefined,
+        response: { status: meta.responseStatus, bodyText: meta.responseBody },
+      });
     }
-
     if (!reqs.length) return { ok: false, reason: "no_requests" };
 
-    // 去重（同一 URL 同一分钟内只保留最新）
     const dedup = new Map();
-    for (const r of reqs) {
-      const k = r.url;
-      const cur = dedup.get(k);
-      if (!cur) dedup.set(k, r);
-    }
+    for (const r of reqs) dedup.set(r.url, r);
 
     const payload = {
       capturedAt: new Date().toISOString(),
@@ -146,43 +189,37 @@
 
     try {
       const r = await chrome.runtime.sendMessage({ cmd: "upload_round", payload });
-      return r;
+      return { ok: r?.ok, status: r?.status, requests: r?.requests, error: r?.error };
     } catch (e) {
       return { ok: false, error: String(e) };
     }
   }
 
-  // 监听来自 background 的命令
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.cmd === "capture_now") {
       captureAndUpload().then(sendResponse);
       return true;
     }
     if (msg?.cmd === "get_poi") {
-      // 优先用当前已经检测到的 POI；否则现算一次
       const poi = currentPOI || detectPOIFromURL();
       sendResponse(poi || null);
       return false;
     }
+    if (msg?.cmd === "diagnose") {
+      const f = window.fetch;
+      const o = XMLHttpRequest.prototype.open;
+      sendResponse({
+        url: location.href,
+        fetchWrapped: !!(f && f.__ctrip_sentry_wrapped),
+        xhrOpenWrapped: !!(o && o.__ctrip_sentry_wrapped),
+        fetchToString: f ? String(f).slice(0, 120) : null,
+        inflight: inflight.size,
+      });
+      return false;
+    }
   });
 
-  // 初始化：先装一次，再在几个时点重装（防 Ctrip SDK 在 document_start 之后
-  // 覆盖 window.fetch / XMLHttpRequest.prototype.open/send）。
-  hookFetch();
-  hookXHR();
-  installPerfObserver();
-
-  // Re-hook on lifecycle events + periodically for the first 10s.
-  const reinstall = () => { hookFetch(); hookXHR(); };
-  document.addEventListener("DOMContentLoaded", reinstall);
-  window.addEventListener("load", reinstall);
-  let ticks = 0;
-  const tickId = setInterval(() => {
-    reinstall();
-    if (++ticks >= 20) clearInterval(tickId); // 20 × 500ms = 10s
-  }, 500);
-
-  // 页面变化时清空 in-flight
+  // SPA URL 切换清空缓存
   let lastUrl = location.href;
   setInterval(() => {
     if (location.href !== lastUrl) {

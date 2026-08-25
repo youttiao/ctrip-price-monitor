@@ -76,6 +76,90 @@ async function nudgeActiveTab() {
   } catch (_) { /* tab 可能没注入 content script */ }
 }
 
+/**
+ * 打开 m.ctrip.com 登录页 → 轮询 .ctrip.com cookie 直到拿到 GUID（最多 90s）
+ * → POST /api/cookies/sync → 广播结果到 popup + 落 storage。
+ * 整个流程在 background 跑，即使 popup 关闭也能完成。
+ */
+async function startCookieSyncFlow() {
+  let loginTab = null;
+  try {
+    loginTab = await chrome.tabs.create({
+      url: "https://m.ctrip.com/webapp/myctrip/",
+      active: true,
+    });
+    await chrome.storage.local.set({
+      lastCookieSync: { ok: false, phase: "waiting_login", count: 0, at: Date.now() },
+    });
+    broadcast({ cmd: "cookie_sync_result", ok: false, phase: "waiting_login", count: 0 });
+  } catch (e) {
+    const result = { ok: false, error: "open_failed:" + String(e), count: 0, at: Date.now() };
+    await chrome.storage.local.set({ lastCookieSync: result });
+    broadcast({ cmd: "cookie_sync_result", ...result });
+    return;
+  }
+
+  const deadline = Date.now() + 90_000;
+  let snapshot = [];
+  let lastBroadcast = 0;
+  while (Date.now() < deadline) {
+    try {
+      const cks = await chrome.cookies.getAll({ domain: ".ctrip.com" });
+      snapshot = cks;
+      if (cks.find((x) => x.name === "GUID")) break;
+    } catch (_) {}
+    // 每 10s 推一次「还在等」给 popup（防止 popup 没收到任何东西以为失败了）
+    if (Date.now() - lastBroadcast > 10_000) {
+      lastBroadcast = Date.now();
+      const phase = { ok: false, phase: "waiting_login", count: snapshot.length, at: Date.now() };
+      await chrome.storage.local.set({ lastCookieSync: phase });
+      broadcast({ cmd: "cookie_sync_result", ...phase });
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  const gotGuid = snapshot.some((x) => x.name === "GUID");
+  if (!gotGuid) {
+    const result = { ok: false, error: "timeout: 未在 90s 内拿到 GUID", count: snapshot.length, at: Date.now() };
+    await chrome.storage.local.set({ lastCookieSync: result });
+    broadcast({ cmd: "cookie_sync_result", ...result });
+    if (loginTab?.id) {
+      try { await chrome.tabs.remove(loginTab.id); } catch (_) {}
+    }
+    return;
+  }
+
+  // 上传
+  try {
+    const c = await loadCfg();
+    if (!c.apiSecret) {
+      const result = { ok: false, error: "未配置 API Secret", count: snapshot.length, at: Date.now() };
+      await chrome.storage.local.set({ lastCookieSync: result });
+      broadcast({ cmd: "cookie_sync_result", ...result });
+      return;
+    }
+    await syncCookies();
+    const result = { ok: true, count: snapshot.length, at: Date.now() };
+    await chrome.storage.local.set({ lastCookieSync: result });
+    broadcast({ cmd: "cookie_sync_result", ...result });
+  } catch (e) {
+    const result = { ok: false, error: String(e), count: snapshot.length, at: Date.now() };
+    await chrome.storage.local.set({ lastCookieSync: result });
+    broadcast({ cmd: "cookie_sync_result", ...result });
+  } finally {
+    // 登录页可由用户留着，关闭容易误伤；留 3s 再试着关，方便用户继续看登录态
+    if (loginTab?.id) {
+      setTimeout(() => {
+        chrome.tabs.remove(loginTab.id).catch(() => {});
+      }, 3000);
+    }
+  }
+}
+
+function broadcast(msg) {
+  try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch (_) {}
+}
+
 // content script 上报 round
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -92,7 +176,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           },
           body: JSON.stringify(msg.payload),
         });
-        sendResponse({ ok: r.ok, status: r.status });
+        sendResponse({ ok: r.ok, status: r.status, requests: msg.payload?.requests?.length });
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });
       }
@@ -101,6 +185,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg?.cmd === "sync_now") {
       await syncCookies();
       sendResponse({ ok: true });
+    } else if (msg?.cmd === "start_cookie_sync") {
+      // popup 请求启动一次「打开登录 + 轮询 GUID + 上传」流程。
+      // 这里 fire-and-forget；结果通过 broadcast 发回 popup，并落 storage 让
+      // popup 重开后仍能看到上次结果。
+      startCookieSyncFlow().catch((e) => console.error("[ctrip] startCookieSyncFlow", e));
+      sendResponse({ ok: true, started: true });
+    } else if (msg?.cmd === "cookie_sync_result_ack") {
+      // popup 收到结果后清掉持久化记录
+      await chrome.storage.local.remove("lastCookieSync");
     } else if (msg?.cmd === "sync_poi") {
       // popup → 这里 → POST /api/admin/pois/add-via-extension
       const c = await loadCfg();

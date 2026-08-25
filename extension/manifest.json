@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "携程哨兵 · 采集器",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "采集携程 H5 页面的 POI 货架与价格数据，同步到自己的 dashboard。",
   "permissions": [
     "storage",
     "cookies",
-    "alarms"
+    "alarms",
+    "tabs"
   ],
   "host_permissions": [
     "https://m.ctrip.com/*",

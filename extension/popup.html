@@ -4,45 +4,261 @@
   <meta charset="utf-8">
   <title>携程哨兵 · 采集器</title>
   <style>
-    body { font-family: -apple-system, "PingFang SC", sans-serif; padding: 12px; min-width: 320px; }
-    h1 { font-size: 14px; margin: 0 0 12px; }
-    label { display: block; font-size: 11px; color: #555; margin: 8px 0 2px; }
-    input { width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-family: inherit; font-size: 12px; }
-    button { padding: 6px 12px; margin: 4px 0; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
-    button.primary { background: #4c9aff; color: white; border-color: #4c9aff; }
-    .row { margin-bottom: 8px; }
-    .status { font-size: 11px; padding: 6px; border-radius: 4px; margin-top: 8px; }
-    .status.ok { background: #e8f5e8; color: #2c7a2c; }
-    .status.err { background: #fde4e4; color: #b22; }
-    .hint { font-size: 10px; color: #888; margin-top: 2px; }
+    :root {
+      --ink: #0E1116;
+      --ink-2: #161A22;
+      --paper: #F2EBD8;
+      --paper-mute: #9A9385;
+      --amber: #E89B30;
+      --amber-hi: #F5A848;
+      --slate: #5B6470;
+      --green: #5A8F6E;
+      --red: #C2443A;
+      --serif: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', serif;
+      --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+      --ui: -apple-system, BlinkMacSystemFont, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--ink);
+      color: var(--paper);
+      font: 13px/1.5 var(--ui);
+      width: 360px;
+      padding: 16px 18px 14px;
+      -webkit-font-smoothing: antialiased;
+      letter-spacing: .01em;
+    }
+
+    /* ---------- HEADER ---------- */
+    header { position: relative; margin-bottom: 14px; }
+    header::before {
+      content: "";
+      display: block;
+      height: 2px;
+      background: linear-gradient(90deg, var(--amber) 0%, var(--amber) 35%, transparent 100%);
+      margin-bottom: 10px;
+    }
+    .mark {
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: .04em;
+      color: var(--paper);
+      margin: 0;
+      line-height: 1.1;
+    }
+    .mark small {
+      display: block;
+      font-family: var(--mono);
+      font-weight: 400;
+      font-size: 9.5px;
+      color: var(--paper-mute);
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+    .clock {
+      position: absolute; right: 0; top: 12px;
+      font: 10px/1 var(--mono);
+      color: var(--paper-mute);
+      letter-spacing: .1em;
+      text-align: right;
+    }
+    .clock b {
+      display: block;
+      color: var(--amber);
+      font-weight: 400;
+      font-size: 11px;
+      letter-spacing: .05em;
+      margin-top: 2px;
+    }
+
+    /* ---------- SECTION ---------- */
+    section { margin-bottom: 14px; }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--paper-mute);
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      margin: 0 0 8px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .eyebrow::before {
+      content: ""; width: 6px; height: 6px;
+      background: var(--amber); display: inline-block;
+    }
+    .eyebrow::after {
+      content: ""; flex: 1; height: 1px;
+      background: var(--slate); opacity: .35;
+    }
+
+    /* ---------- INPUT ---------- */
+    label {
+      display: block;
+      font: 10px/1 var(--mono);
+      color: var(--paper-mute);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      margin: 10px 0 4px;
+    }
+    input {
+      width: 100%;
+      background: var(--ink-2);
+      color: var(--paper);
+      border: 1px solid var(--slate);
+      border-radius: 2px;
+      padding: 8px 10px;
+      font: 12px/1.4 var(--mono);
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: var(--amber); }
+    input::placeholder { color: var(--slate); }
+    .hint {
+      font: 10px/1.5 var(--mono);
+      color: var(--paper-mute);
+      margin-top: 4px;
+      letter-spacing: .04em;
+    }
+
+    /* ---------- BUTTON ---------- */
+    button {
+      display: block;
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 2px;
+      border: 1px solid var(--slate);
+      background: transparent;
+      color: var(--paper);
+      font: 12px/1 var(--ui);
+      letter-spacing: .08em;
+      cursor: pointer;
+      transition: border-color .15s, background .15s, color .15s;
+    }
+    button:hover:not(:disabled) { border-color: var(--paper); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { opacity: .3; cursor: not-allowed; }
+    button.primary {
+      background: var(--amber);
+      border-color: var(--amber);
+      color: var(--ink);
+      font-weight: 600;
+    }
+    button.primary:hover:not(:disabled) { background: var(--amber-hi); border-color: var(--amber-hi); }
+    .btn-row { display: flex; gap: 6px; margin-top: 10px; }
+    .btn-row > button { flex: 1; padding: 9px 10px; }
+
+    /* ---------- POI PANEL ---------- */
+    .poi-panel {
+      background: var(--ink-2);
+      border: 1px solid var(--slate);
+      border-radius: 2px;
+      padding: 12px 12px 10px;
+    }
+    .poi-panel.empty { text-align: left; padding: 14px 12px; }
+    .poi-name {
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: 17px;
+      color: var(--paper);
+      margin: 0;
+      line-height: 1.2;
+    }
+    .poi-meta {
+      display: flex;
+      gap: 8px; align-items: center;
+      margin-top: 6px;
+      font: 10px/1.4 var(--mono);
+      color: var(--paper-mute);
+      letter-spacing: .06em;
+      flex-wrap: wrap;
+    }
+    .poi-meta .id { color: var(--amber); }
+    .poi-meta .dot { color: var(--slate); }
+    .poi-status {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--slate);
+      font: 11px/1.5 var(--mono);
+      color: var(--paper);
+      letter-spacing: .02em;
+    }
+    .poi-status.ok  { color: var(--green); }
+    .poi-status.err { color: var(--red); }
+    .poi-status.run { color: var(--amber); }
+    .poi-status .count { color: var(--amber); }
+
+    /* ---------- GUIDE LINK ---------- */
+    .guide {
+      font: 11.5px/1.65 var(--ui);
+      color: var(--paper-mute);
+    }
+    .guide b {
+      color: var(--paper);
+      font-weight: 600;
+    }
+    .guide a {
+      color: var(--amber);
+      text-decoration: none;
+      border-bottom: 1px dashed var(--amber);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .guide a:hover { color: var(--amber-hi); border-color: var(--amber-hi); }
+
+    /* ---------- STATUS (terminal footer) ---------- */
+    .status {
+      font: 10.5px/1.55 var(--mono);
+      color: var(--paper-mute);
+      padding: 9px 11px;
+      border-left: 2px solid var(--slate);
+      background: rgba(242, 235, 216, .03);
+      letter-spacing: .02em;
+    }
+    .status.ok  { border-left-color: var(--green); color: var(--paper); }
+    .status.err { border-left-color: var(--red); color: var(--paper); }
+    .status.run {
+      border-left-color: var(--amber); color: var(--paper);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
 <body>
-<h1>🛰 携程哨兵 · 采集器</h1>
+  <header>
+    <div class="mark">携程哨兵<small>SENTRY · COLLECTOR</small></div>
+    <div class="clock"><span id="clockText">--:--:--</span><b id="verText">v0.2.3</b></div>
+  </header>
 
-<div class="row">
-  <label>Server URL</label>
-  <input id="server" placeholder="https://xiecheng.19880913.xyz 或 http://127.0.0.1:8000">
-</div>
-<div class="row">
-  <label>API Secret</label>
-  <input id="apiSecret" type="password" placeholder="X-API-Secret 头（粘贴就行）">
-  <div class="hint">在 dashboard 的 管理 → API Secret 页面查看</div>
-</div>
-<div class="row">
-  <button class="primary" id="save">保存配置</button>
-  <button id="syncNow">立即同步 cookie</button>
-</div>
-<div class="row">
-  <button id="captureNow">在当前 tab 抓一轮</button>
-</div>
-<div class="row">
-  <button id="syncPoi">同步当前 POI 到 dashboard</button>
-  <div class="hint">前提：当前 tab 在 m.ctrip.com 的某个 POI 页面</div>
-</div>
+  <section>
+    <div class="eyebrow">接入</div>
+    <label>Server URL</label>
+    <input id="server" placeholder="https://xiecheng.19880913.xyz" autocomplete="off" spellcheck="false">
+    <label>API Secret</label>
+    <input id="apiSecret" type="password" placeholder="X-API-Secret 粘贴即可" autocomplete="off" spellcheck="false">
+    <div class="hint">在 dashboard 管理 → API Secret 页面查看</div>
+    <div class="btn-row">
+      <button id="save">保存配置</button>
+    </div>
+  </section>
 
-<div id="status" class="status" style="display:none"></div>
+  <section>
+    <div class="eyebrow">同步 Cookie</div>
+    <button class="primary" id="syncNow">打开携程登录页并同步</button>
+    <div class="hint">会打开 m.ctrip.com 登录 → 检测到 GUID 后自动上传。最多等 90 秒。</div>
+  </section>
 
-<script src="popup.js"></script>
+  <section>
+    <div class="eyebrow">当前 POI</div>
+    <div id="poiPanel"></div>
+  </section>
+
+  <div id="status" class="status" hidden></div>
+
+  <script src="popup.js"></script>
 </body>
 </html>
