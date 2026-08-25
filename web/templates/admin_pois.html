@@ -64,7 +64,7 @@
               {% else %}<span class="muted">○ 停用</span>{% endif %}
             </td>
             <td class="muted mono" style="font-size:var(--fs-xs)">
-              {{ p.last_captured[:16] if p.last_captured else '—' }}
+              {{ p.last_captured | bj_time or '—' }}
             </td>
             <td class="num muted">{{ p.last_sku_count if p.last_sku_count is not none else '—' }}</td>
             <td class="num">

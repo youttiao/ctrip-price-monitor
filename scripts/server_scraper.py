@@ -215,7 +215,7 @@ def main():
         if not payload.get("requests"):
             print(f"  no requests, skip")
             continue
-        code, resp = post_round(args.server, args.secret, payload)
+        code, resp = post_round(args.server, secret, payload)
         print(f"  -> {code} {resp.get('round_id','?')[:8] if isinstance(resp, dict) else resp}")
 
 

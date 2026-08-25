@@ -1,7 +1,7 @@
 """FastAPI app：dashboard + login + ingest endpoints。"""
 from __future__ import annotations
 import hmac, json, os, secrets, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Cookie, Depends, Form, Header, HTTPException, Request, Response
@@ -13,6 +13,21 @@ from . import auth, db
 from .ingest import router as ingest_router
 from .routes.pages import router as pages_router
 from .routes.admin import router as admin_router
+
+BJ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _bj_time(v):
+    """UTC ISO/datetime → 'YYYY-MM-DD HH:MM' 北京时间。空值原样返回。"""
+    if not v:
+        return v
+    if isinstance(v, str):
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    else:
+        dt = v
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BJ).strftime("%Y-%m-%d %H:%M")
 
 
 def create_app(db_path: str = None) -> FastAPI:
@@ -28,6 +43,7 @@ def create_app(db_path: str = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     templates = Jinja2Templates(directory=tmpl_dir)
     templates.env.globals["now"] = lambda: datetime.now(timezone.utc)
+    templates.env.filters["bj_time"] = _bj_time
 
     def heartbeat(db_conn):
         """报头心跳：上次捕获 + 距今分钟数 + pulse 状态。"""

@@ -14,7 +14,7 @@
   <div class="alert-list">
     {% for a in alerts %}
     <div class="alert-row {{ a.severity }}">
-      <div class="ts">{{ a.ts[:19].replace('T',' ') if a.ts else '' }}</div>
+      <div class="ts">{{ a.ts | bj_time if a.ts else '' }}</div>
       <div><span class="pill {{ a.severity }}">{{ a.severity }}</span></div>
       <div class="body">
         <div class="title">

@@ -124,7 +124,7 @@
   <div class="alert-list">
     {% for a in alerts[:8] %}
     <div class="alert-row {{ a.severity }}">
-      <div class="ts">{{ a.ts[:16].replace('T',' ') if a.ts else '' }}</div>
+      <div class="ts">{{ a.ts | bj_time if a.ts else '' }}</div>
       <div><span class="pill {{ a.severity }}">{{ a.severity }}</span></div>
       <div class="body">
         <div class="title">{{ a.type }} · {{ a.sku_name or a.shelf_type_name or '' }}</div>
