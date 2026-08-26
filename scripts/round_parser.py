@@ -41,6 +41,59 @@ def update_vendor_stats(conn, vendor_id: int, vendor_name: str | None, brand: st
     """, (vendor_id, vendor_name, brand, licence, captured_at, captured_at))
 
 
+def upsert_ticket_meta(conn, rows: list[tuple], captured_at: str, round_pk: int):
+    """跨轮稳定的票种元数据 upsert。
+
+    自然键 (poi_viewid, resource_id); vendor/shelf 等字段用 COALESCE 保留
+    缺数据轮不覆盖。新 rid 直接 INSERT。
+
+    rows 元素必须有 17 个字段 (不含时间戳): 见 process_round 里的 tm_rows 形态。
+    这里再追加 (first_seen_at, last_seen_at, last_round_id, created_at, updated_at) 5 个。
+    """
+    if not rows:
+        return 0
+    now = captured_at
+    enriched = [
+        r + (now, now, round_pk, now, now) for r in rows
+    ]
+    conn.executemany("""
+        INSERT INTO ticket_meta (
+            poi_viewid, resource_id,
+            full_name, primary_vendor_id, primary_vendor_name, primary_vendor_brand,
+            primary_vendor_licence, primary_vendor_licence_pic,
+            shelf_type_id, shelf_type_name, spotid,
+            parent_resource_id, people_property,
+            market_price, sale_count, first_booking_date,
+            raw_resource,
+            first_seen_at, last_seen_at, last_round_id,
+            created_at, updated_at
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(poi_viewid, resource_id) DO UPDATE SET
+            full_name                 = COALESCE(NULLIF(excluded.full_name, ''),                 ticket_meta.full_name),
+            primary_vendor_id         = CASE WHEN excluded.primary_vendor_id > 0
+                                              THEN excluded.primary_vendor_id
+                                              ELSE ticket_meta.primary_vendor_id END,
+            primary_vendor_name       = COALESCE(NULLIF(excluded.primary_vendor_name, ''),       ticket_meta.primary_vendor_name),
+            primary_vendor_brand      = COALESCE(NULLIF(excluded.primary_vendor_brand, ''),      ticket_meta.primary_vendor_brand),
+            primary_vendor_licence    = COALESCE(NULLIF(excluded.primary_vendor_licence, ''),    ticket_meta.primary_vendor_licence),
+            primary_vendor_licence_pic= COALESCE(NULLIF(excluded.primary_vendor_licence_pic, ''),ticket_meta.primary_vendor_licence_pic),
+            shelf_type_id             = COALESCE(excluded.shelf_type_id,              ticket_meta.shelf_type_id),
+            shelf_type_name           = COALESCE(NULLIF(excluded.shelf_type_name, ''), ticket_meta.shelf_type_name),
+            spotid                    = COALESCE(excluded.spotid,                     ticket_meta.spotid),
+            parent_resource_id        = COALESCE(excluded.parent_resource_id,         ticket_meta.parent_resource_id),
+            people_property           = COALESCE(NULLIF(excluded.people_property, ''),ticket_meta.people_property),
+            market_price              = COALESCE(excluded.market_price,               ticket_meta.market_price),
+            sale_count                = COALESCE(excluded.sale_count,                 ticket_meta.sale_count),
+            first_booking_date        = COALESCE(NULLIF(excluded.first_booking_date,''),ticket_meta.first_booking_date),
+            raw_resource              = excluded.raw_resource,
+            last_seen_at              = excluded.last_seen_at,
+            last_round_id             = excluded.last_round_id,
+            updated_at                = excluded.updated_at
+    """, enriched)
+    return len(enriched)
+
+
 def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
     raw = json.loads(Path(raw_path).read_text(encoding="utf-8"))
     captured_at = raw.get("capturedAt") or datetime.now(timezone.utc).isoformat()
@@ -60,6 +113,21 @@ def process_round(conn, round_pk: int, raw_path: str, poi_viewid: int):
             conn, sku["primary_vendor_id"], sku.get("primary_vendor_name"),
             sku.get("primary_vendor_brand"), sku.get("primary_vendor_licence"), captured_at,
         )
+
+    # 1.5) ticket_meta 跨轮稳定元数据 upsert (按 (poi_viewid, resource_id) 自然键)
+    #      让 dashboard "票种不丢": 本轮没抓到的 rid 仍能在 ticket_meta 里占位
+    #      直到 retention 把它清除 (7 天未抓到)。
+    tm_rows = [(
+        poi_viewid, sku["resource_id"],
+        sku.get("full_name"), sku["primary_vendor_id"], sku.get("primary_vendor_name"),
+        sku.get("primary_vendor_brand"), sku.get("primary_vendor_licence"),
+        sku.get("primary_vendor_licence_pic"),
+        sku.get("shelf_type_id"), sku.get("shelf_type_name"), sku.get("spotid"),
+        sku.get("parent_resource_id"), sku.get("people_property"),
+        sku.get("market_price"), sku.get("sale_count"), sku.get("first_booking_date"),
+        json.dumps(sku.get("raw_resource") or {}, ensure_ascii=False),
+    ) for sku in parsed["skus"]]
+    upsert_ticket_meta(conn, tm_rows, captured_at, round_pk)
 
     # 2) sku_snapshot 批量插入
     rows = [(

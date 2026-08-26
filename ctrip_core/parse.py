@@ -24,8 +24,15 @@
 """
 from __future__ import annotations
 import json
+import re
 from typing import Optional
 from . import selectors as S
+
+# 从 addInfo chip name 末尾匹配常见人群后缀。顺序很重要 — 先匹配最长后缀（"成人票"），
+# 避免短后缀（"成人"）吃掉尾字符。
+PEOPLE_SUFFIX_RE = re.compile(
+    r"(成人票|儿童票|学生票|老人票|婴儿票|不限人群|家庭票|双人票|单人票|成人|儿童|学生|老人|婴儿)$"
+)
 
 
 def parse_round(raw_round: dict) -> dict:
@@ -50,8 +57,9 @@ def parse_round(raw_round: dict) -> dict:
     # 1. 解析 shelf → 构建 rid → shelfType 映射（同时抽 minPriceRelationInfo 派生 parent / people）
     shelf_lookup = _parse_shelf(shelf_body, viewid) if shelf_body else {}
 
-    # 2. 解析 addInfo → rid → vendor 映射
-    vendor_map = _parse_addinfos(addinfo_bodies, set(shelf_lookup.keys()))
+    # 2. 解析 addInfo → rid → vendor 映射（带 URL hint 让 sibling chip rid 也能落库）
+    addinfo_pairs = _find_request_bodies(raw_round, addinfo_path)
+    vendor_map = _parse_addinfos(addinfo_pairs, set(shelf_lookup.keys()))
 
     # 3. 解析 resourceDetails → rid → peopleProperty（人群标签权威源）
     people_map = _parse_resource_details(rdetail_bodies)
@@ -72,8 +80,10 @@ def parse_round(raw_round: dict) -> dict:
         for rid, info in vendor_map.items():
             shelf = shelf_lookup.get(rid, {})
             crowd = crowd_map.get(rid) or {}
-            # 人群标签：resourceDetails > getShelfResourceList > shelf.minPriceRelationInfo fallback
-            people = (people_map.get(rid)
+            # 人群标签：addInfo name 后缀（最可靠，chip 行也能拿到）>
+            #          resourceDetails > getShelfResourceList > shelf.minPriceRelationInfo fallback
+            people = (info.get("people_property")
+                      or people_map.get(rid)
                       or crowd.get("people_property")
                       or shelf.get("people_property"))
             parent_rid = shelf.get("parent_resource_id")
@@ -109,7 +119,10 @@ def parse_round(raw_round: dict) -> dict:
         if rid in covered:
             continue
         crowd = crowd_map.get(rid) or {}
-        people = (people_map.get(rid)
+        # vendor_map 也可能在 fallback 路径漏掉 — 同样查一下
+        info = vendor_map.get(rid) or {}
+        people = (info.get("people_property")
+                  or people_map.get(rid)
                   or crowd.get("people_property")
                   or shelf.get("people_property"))
         parent_rid = shelf.get("parent_resource_id")
@@ -144,7 +157,10 @@ def parse_round(raw_round: dict) -> dict:
         if rid in covered:
             continue
         srl_name = crowd.get("name")
-        people = crowd.get("people_property") or people_map.get(rid)
+        info = vendor_map.get(rid) or {}
+        people = (info.get("people_property")
+                  or crowd.get("people_property")
+                  or people_map.get(rid))
         skus.append({
             "resource_id": rid,
             "primary_vendor_id": 0,
@@ -284,12 +300,46 @@ def _parse_shelf(shelf_body: dict, viewid: int) -> dict[int, dict]:
         info["people_property"] = mpri.get("peoplePropertyName") or None
         info["parent_resource_id"] = None
 
+    # Step 4.5: 把每个父 SKU 的 productIds (chip sibling rids) 也补进 rid_to_l1。
+    # 父 rid 的 productIds 数组记录了"可选人群 chip"的实际 rid（成人/儿童/学生等）。
+    # Phase 4.5 扩展 fan-out 给这些 chip rids 打了 addInfo/priceCal/resourceDetails，
+    # 所以 vendor_map[chipRid] / price_days[chipRid] / people_map[chipRid] 都有数据，
+    # 但 rid_to_l1 只有父 rid → parse_round 三个 SKU loop 全跳过 chip rid → dashboard
+    # 看不到 chip 行。把 chip rid 也加入 rid_to_l1，parent_resource_id 指向父 rid，
+    # full_name/people_property 留 None，由 parse_round 的 vendor_map/crowd_map 链覆盖。
+    extra: dict[int, dict] = {}
+    for parent_rid, parent_info in rid_to_l1.items():
+        product_ids = parent_info.get("product_ids") or []
+        if len(product_ids) < 2:
+            continue
+        for chip_rid in product_ids:
+            chip_rid = int(chip_rid)
+            if not chip_rid or chip_rid == int(parent_rid):
+                continue
+            if chip_rid in rid_to_l1 or chip_rid in extra:
+                continue
+            extra[chip_rid] = {
+                "resource_id": chip_rid,
+                "level1_sale_unit_id": None,
+                "product_ids": [],
+                "full_name": None,  # 由 vendor_map (addInfo) 或 crowd_map 提供
+                "spotid": parent_info.get("spotid"),
+                "display_price": None,  # 由 price_cal 提供
+                "market_price": None,
+                "first_booking_date": None,
+                "sale_count": None,
+                "parent_resource_id": int(parent_rid),  # ← 关键：标记 chip 归属
+                "people_property": None,  # 由 vendor_map (mpri) 或 crowd_map 提供
+                "raw": None,
+            }
+    rid_to_l1.update(extra)
+
     return rid_to_l1
 
 
 # ── addInfo 解析：rid → vendor ──
 
-def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
+def _parse_addinfos(request_bodies: list[tuple[str, dict]], rids: set[int]) -> dict[int, dict]:
     """从 resourceAddInfo 响应构建 rid → {primary: vendorInfo}。
 
     响应结构（实测）：
@@ -297,28 +347,45 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
       "data": {
         "resources": [{
           "id": <resourceId>,
-          "productId": <pid>,
+          "productId": <pid>,        ← mpri productId（不是 chip），但 name 是 chip-specific
           "vendorInfo": {vendorId, name, brandCompanyName, licenceNo,
                          rawLicencePicUrl, ...},
           "vendorInfos": [...]  # 复数 = 多 vendorId（组合产品）罕见
         }]
       }
     }
+
+    request_bodies: (url, body) 列表 — URL 含 `__chip=<rid>` 时（sibling fire），
+    该 chip rid 也参与双键落库，让 chip 行能找到自己的 vendor + name + ppl。
     """
     out = {}
-    for b in bodies:
+    for url, b in request_bodies:
         if not b:
             continue
+        # sibling fire hint：URL 末段 `&__chip=<rid>`
+        url_chip_hint = None
+        if "__chip=" in url:
+            try:
+                url_chip_hint = int(url.split("__chip=")[-1].split("&")[0])
+            except (ValueError, IndexError):
+                url_chip_hint = None
         for r in (b.get("data") or {}).get("resources", []) or []:
             rid = r.get("id")
+            product_id = r.get("productId")
             # 当 rids 为空（无 shelf 数据，server-scraper 场景），保留所有 vendor。
             # 否则只保留 shelf_lookup 里有匹配的 rid。
-            if rids and rid not in rids:
+            # chip 行场景：addInfo 响应的 id 是父 rid，但 productId 是 mpri（不是 chip），
+            # 而 shelf_lookup Step 4.5 把 chip rid 也补进去了 — 这里允许 productId 通过过滤；
+            # URL __chip hint 也参与（sibling fire 抓到的 chip rid）。
+            if rids and rid not in rids and (not product_id or product_id not in rids) \
+                    and (url_chip_hint is None or url_chip_hint not in rids):
                 continue
             vi = r.get("vendorInfo") or {}
             if not vi or not vi.get("vendorId"):
                 continue
-            out[rid] = {
+            chip_name = r.get("name") or ""
+            m = PEOPLE_SUFFIX_RE.search(chip_name)
+            entry = {
                 "primary": {
                     "vendorId": vi.get("vendorId"),
                     "name": vi.get("name"),
@@ -326,8 +393,27 @@ def _parse_addinfos(bodies: list[dict], rids: set[int]) -> dict[int, dict]:
                     "licenceNo": vi.get("licenceNo"),
                     "licencePicUrl": vi.get("rawLicencePicUrl") or vi.get("licencePicUrl"),
                 },
-                "full_name": r.get("name"),
+                "full_name": chip_name,
+                # chip 名字末尾人群后缀是 addInfo 最可靠的人群信号（resourceDetails
+                # 对 chip rid 返回 404），按 productId 落库后 chip 行直接拿到 ppl。
+                "people_property": m.group(1) if m else None,
             }
+            # 三键落库：覆盖「productId 永远是 mpri」场景（Ctrip 不回 chip rid 字段）。
+            # sibling fire (__chip URL hint) 场景下：
+            #   - response.id = 父 rid（不是 chip）
+            #   - response.productId = mpri productId（不是 chip）
+            #   - 必须只写 __chip，不能写 rid 或 product_id，否则 chip 110268323 的
+            #     「儿童票」会覆盖 chip 109770667 的「成人票」+ 父 rid 的「成人票」。
+            # 非 sibling fire（Phase 4 父 SKU 直查）场景下：
+            #   - rid = 该 rid 自己，productId = mpri（== rid）；按 rid + productId 双键
+            #   - 写入两个键值相同，安全。
+            if url_chip_hint is not None:
+                out[url_chip_hint] = entry
+            else:
+                if rid is not None:
+                    out[rid] = entry
+                if product_id is not None and product_id != rid:
+                    out[product_id] = entry
     return out
 
 
@@ -396,8 +482,10 @@ def _parse_price_calendars(bodies: list[dict],
                 for r in pkg.get("resourcePriceAndStockInfos", []) or []:
                     rid = r.get("resourceId")
                     primary = (vendor_map or {}).get(rid, {}).get("primary") or {}
-                    # 人群标签：resourceDetails > getShelfResourceList > shelf.minPriceRelationInfo
-                    people = (people_map or {}).get(rid)
+                    # 人群标签：addInfo name 后缀 > resourceDetails > getShelfResourceList > shelf.mpri
+                    info_entry = (vendor_map or {}).get(rid) or {}
+                    people = (info_entry.get("people_property")
+                              or (people_map or {}).get(rid))
                     if not people and crowd_map:
                         people = (crowd_map.get(rid) or {}).get("people_property")
                     if not people and shelf_lookup:
@@ -422,6 +510,38 @@ def _parse_price_calendars(bodies: list[dict],
                         "people_property": people,
                         "raw": r,
                     })
+
+    # Chip 价格继承：Ctrip 的 priceCal 端点对 chip rid 单独 query 直接 errcode 1005
+    # （"none firstLevelSaleUnit info"），chip 行没有自己的 price_day。这里从
+    # shelf_lookup 找每个 chip 的 parent_resource_id，把父 rid 当天的所有 price_day
+    # 行复制一份 resource_id 替换成 chip rid，让 dashboard 的 chip 单元格能正常染色。
+    if shelf_lookup:
+        parent_to_chips: dict[int, list[int]] = {}
+        for rid, info in shelf_lookup.items():
+            parent_rid = info.get("parent_resource_id")
+            if parent_rid and parent_rid != rid:
+                parent_to_chips.setdefault(parent_rid, []).append(rid)
+        if parent_to_chips:
+            by_rid: dict[int, list[dict]] = {}
+            for row in out:
+                by_rid.setdefault(row["resource_id"], []).append(row)
+            for parent_rid, chip_rids in parent_to_chips.items():
+                parent_rows = by_rid.get(parent_rid) or []
+                if not parent_rows:
+                    continue
+                for chip_rid in chip_rids:
+                    # 同一个 chip 一天可能已经存在（极少见，价格日重抓），跳过避免重复。
+                    already = {(r["sale_date"], r.get("package_id"))
+                               for r in by_rid.get(chip_rid, [])}
+                    for p_row in parent_rows:
+                        key = (p_row["sale_date"], p_row.get("package_id"))
+                        if key in already:
+                            continue
+                        cloned = dict(p_row)
+                        cloned["resource_id"] = chip_rid
+                        cloned["inherited_from_parent"] = True
+                        # 父的 vendor 是 chip 的 vendor（addInfo 双键落库），无需改 winning_vendor_id
+                        out.append(cloned)
     return out
 
 
@@ -511,6 +631,22 @@ def _find_bodies(rr: dict, url_substr: str) -> list[dict]:
             b = _extract_body(r)
             if b is not None:
                 out.append(b)
+    return out
+
+
+def _find_request_bodies(rr: dict, url_substr: str) -> list[tuple[str, dict]]:
+    """返回 (url, body) 元组列表 — 给 addInfo 用，URL 含 __chip=<rid> hint。
+
+    sibling chip addInfo 用 `addinfoPayload(parent, viewid, chip)` 时，响应里
+    productId 是 mpri（不是 chip），name 才是 chip-specific。URL 拼 `__chip=<rid>`
+    让 parser 知道本次响应的目标 chip，落库时双键。
+    """
+    out = []
+    for r in rr.get("requests", []):
+        if url_substr in r.get("url", ""):
+            b = _extract_body(r)
+            if b is not None:
+                out.append((r.get("url", ""), b))
     return out
 
 

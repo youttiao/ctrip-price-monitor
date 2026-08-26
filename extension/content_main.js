@@ -11,7 +11,7 @@
   if (window.__ctrip_sentry_main_installed) return;
   window.__ctrip_sentry_main_installed = true;
 
-  const SENTINEL = "[ctrip-sentry:main:v0.2.27]";
+  const SENTINEL = "[ctrip-sentry:main:v0.2.34]";
   console.log(SENTINEL, "loading on", location.href);
 
   const TARGET_PATHS = [
@@ -35,7 +35,7 @@
   const PROACTIVE_ENDPOINTS = {
     ADDINFO_URL:             "https://m.ctrip.com/restapi/soa2/12530/json/resourceAddInfo",
     PRICE_CAL_URL:           "https://m.ctrip.com/restapi/soa2/14580/json/getProductPriceCalendar",
-    RESOURCE_DETAIL_URL:     "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails.json",
+    RESOURCE_DETAIL_URL:     "https://m.ctrip.com/restapi/soa2/12314/json/resourceDetails",
     SHELF_RESOURCE_LIST_URL: "https://m.ctrip.com/restapi/soa2/21052/getShelfResourceList",
   };
   // 单轮主动 fire 的 resourceAddInfo 上限。whaleguard 2026-08-25 实测：20 个接连 (3s 间隔)
@@ -56,7 +56,9 @@
   // 12 SKU × 3 calls × 4s ≈ 144s, 提至 25s 等响应窗口, 总 ~170s。
   const PROACTIVE_WAIT_MS = 25000;
   // 单 viewid 的总预算（ms）：3 分钟。超时强制 break 防 WAF 单 viewid 风暴。
-  const PROACTIVE_TOTAL_BUDGET_MS = 180000;
+  // 8 分钟预算 — Phase 1-4 ~250s, Phase 4.5 25s wait + 10 sibling × 3 端点 ~150s ≈ 425s
+  // 加 60s 余量, 避免 Phase 4.5 sibling fan-out 跑到一半被砍
+  const PROACTIVE_TOTAL_BUDGET_MS = 480000;
   // 单个请求的超时（ms）：10s。配合 AbortController。
   const PROACTIVE_REQUEST_TIMEOUT_MS = 10000;
   // 命中 429/430 后，把该 rid 推到 sessionStorage defer 队列，5 分钟内不重试。
@@ -114,6 +116,8 @@
             const postData = init && init.body ? String(init.body) : undefined;
             const meta = { id, url, method, postData, startedAt };
             inflight.set(id, meta);
+            // 借页面 SDK 的 _fxpcqlniredt 会话指纹 — proactive fire 复用, 否则 whaleguard 430
+            sniffFxpcqlniredt(url);
             let resp;
             try {
               resp = raw(input, init);
@@ -657,12 +661,37 @@
     }
   }
 
+  // ---- whaleguard fingerprint borrowing ----
+  // 页面 H5 SDK 启动时会把 cookie 里的 _fxpcqlniredt 写到每个 soa2 URL 的 query string:
+  //   /restapi/soa2/12530/json/resourceAddInfo?_fxpcqlniredt=09031119110709521167&x-traceID=09031119110709521167-1787708850233-9759795
+  // 这个值是 whaleguard RMS 的会话指纹 ID, 缺了直接 430。
+  // 扩展 proactive fire 自己构造 fetch 时漏了 query, 全部被拦 — 必须从已捕获的真实
+  // soa2 URL 里"借"这个 token 复用。fetch wrapper 捕获到第一条带 _fxpcqlniredt 的 URL
+  // 就把它存到 STOLEN_FXPC, fireOne 在每次 fetch 前自动补上。
+  let STOLEN_FXPC = "";
+  function sniffFxpcqlniredt(url) {
+    try {
+      const m = String(url).match(/[?&]_fxpcqlniredt=([^&]+)/);
+      if (m && m[1]) STOLEN_FXPC = m[1];
+    } catch (_) {}
+  }
+  function buildSoa2Url(baseUrl) {
+    if (!STOLEN_FXPC) return baseUrl;
+    // x-traceID 格式: <fxpc>-<ms>-<7位随机>。 ms 取当前时间, random 用 crypto。
+    const ms = Date.now();
+    const rand = Math.floor(Math.random() * 10000000).toString().padStart(7, "0");
+    const xTrace = STOLEN_FXPC + "-" + ms + "-" + rand;
+    const sep = baseUrl.indexOf("?") === -1 ? "?" : "&";
+    return baseUrl + sep + "_fxpcqlniredt=" + encodeURIComponent(STOLEN_FXPC) + "&x-traceID=" + encodeURIComponent(xTrace);
+  }
+
   async function fireOne(url, payload, label, ident) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), PROACTIVE_REQUEST_TIMEOUT_MS);
     pushEvent({ at: Date.now(), kind: "fire", label, ident: ident || "", status: "started" });
     try {
-      const r = await fetch(url, {
+      const finalUrl = buildSoa2Url(url);
+      const r = await fetch(finalUrl, {
         method: "POST",
         headers: buildCtripHeaders(payload && payload.__viewid),
         body: JSON.stringify(payload),
@@ -869,61 +898,77 @@
       }
     }
 
-    // 第 4.5 轮：扫描 inflight 里 crowd 端点响应，抽出真正的 sibling child rid，给它们
-    // 补 priceCalendar + resourceDetails — 不然 chip 拆出来的 学生/儿童 rid 进了 crowd_map
-    // 但 price_day 表空，dashboard join 时这些行直接不显示。
-    // capped 是 addInfo cap 范围内的 rid（含父 rid）；新 sibling 不在 capped 里，需要单独打。
-    await sleepWithJitter(PROACTIVE_WAIT_MS, 4000);  // 等 crowd 响应落 inflight
-    const siblingRids = new Set();
+    // 第 4.5 轮：扫描 inflight 里 getProductShelf 响应，抽出所有 parent rid 的
+    // productIds (= child chip rids — 学生/儿童/老人 etc.)，给它们补 addInfo —
+    // 不然 chip 行的 vendor_map 空，dashboard join 时这些行直接不显示。
+    //
+    // 关键：addInfo 必须用 parent rid 当 resids、chip rid 当 productId 形式发包
+    // (实测 chip rid 单独 query → errcode 1005 / 404)。priceCal / resourceDetails
+    // 同样 — chip rid 无法直接查询，由 parser 从父 rid 数据 fallback：
+    //   - chip ppl  ← _parse_addinfos 从 chip name 后缀正则解析
+    //   - chip 价   ← _parse_price_calendars 从 parent_resource_id 复制
+    //   - chip sale ← shelf_lookup 父的 sale_count 共享（dashboard 端聚合）
+    await sleepWithJitter(PROACTIVE_WAIT_MS, 4000);  // 等 shelf 响应落 inflight
+    const siblingList = [];
     const cappedRids = new Set(capped.map((c) => c.rid));
     try {
       const inflight = (window.__ctrip_sentry_get_inflight && window.__ctrip_sentry_get_inflight()) || [];
       for (const r of inflight) {
-        if (!r || !r.url || !String(r.url).includes("/getShelfResourceList")) continue;
+        if (!r || !r.url || !String(r.url).includes("/getProductShelf")) continue;
         const bodyText = r.response && r.response.bodyText;
         if (!bodyText) continue;
         let body;
         try { body = JSON.parse(bodyText); } catch (_) { continue; }
         const resources = (body && body.resources) || [];
-        for (const child of resources) {
-          const childRid = child && (child.resourceId || child.id);
-          if (childRid && !cappedRids.has(Number(childRid))) {
-            siblingRids.add(Number(childRid));
+        for (const parent of resources) {
+          const productIds = (parent && parent.productIds) || [];
+          if (!Array.isArray(productIds) || productIds.length < 2) continue;
+          // parent rid 自己也在 productIds 里 (mpri), 跳过
+          const parentRid = Number(parent.resourceId || parent.id);
+          for (const pid of productIds) {
+            const childRid = Number(pid);
+            if (childRid && childRid !== parentRid && !cappedRids.has(childRid)) {
+              // 同一 parent 多个 chip 都需要打 — chip rid 不能去重
+              siblingList.push({ rid: childRid, parent: parentRid });
+            }
           }
         }
       }
     } catch (e) {
       console.warn(SENTINEL, "sibling rid scan failed", e);
     }
-    const siblingList = Array.from(siblingRids);
-    PROACTIVE_STATE.total += siblingList.length * 2;
+    PROACTIVE_STATE.total += siblingList.length;  // 每个 chip 1 个 addInfo
     if (siblingList.length) {
       pushEvent({ at: Date.now(), kind: "info", label: "sibling",
-                  ident: siblingList.length + " 新 rid 从 crowd fan-out",
+                  ident: siblingList.length + " chip → parent addInfo",
                   status: "ok" });
       console.log(SENTINEL,
-        "proactive fire sibling discovery: " + siblingList.length + " new rids from crowd fan-out");
+        "proactive fire sibling discovery: " + siblingList.length + " chips from " +
+        new Set(siblingList.map((s) => s.parent)).size + " parents");
     }
     if (siblingList.length) {
       pushEvent({ at: Date.now(), kind: "phase", label: "sibling",
-                  ident: siblingList.length + " rid × 2 端点", status: "started" });
+                  ident: siblingList.length + " chip", status: "started" });
     }
     for (let i = 0; i < siblingList.length; i++) {
       if (budgetExceeded()) {
-        console.warn(SENTINEL, "sibling priceCal: budget exceeded, break at", i);
+        console.warn(SENTINEL, "sibling fire: budget exceeded, break at", i);
         break;
       }
-      const sibRid = siblingList[i];
-      // priceCalendar for sibling
-      await fireOne(PROACTIVE_ENDPOINTS.PRICE_CAL_URL,
-        withViewid(priceCalendarPayload(sibRid, poiId)),
-        "priceCal-sibling",
-        "rid=" + sibRid);
-      // resourceDetails for sibling（补 people_property，理论上 crowd_map 已有，但兜底）
-      await fireOne(PROACTIVE_ENDPOINTS.RESOURCE_DETAIL_URL,
-        withViewid(resourceDetailPayload(sibRid, poiId)),
-        "resourceDetail-sibling",
-        "rid=" + sibRid);
+      const sib = siblingList[i];
+      // addInfo for sibling — 用 parent rid 当 resids, chip rid 当 productId。
+      // chip rid 单独 query 后端返 errcode 1005 / 404，必须借 parent 查询。
+      // 响应是 id=parent, productId=mpri（不是 chip！Ctrip 用 mpri 回包），name 才是
+      // chip-specific。为让 parser 知道这次发包的目标 chip，把 chip rid 拼进 URL
+      // （&__chip=<rid>），_parse_addinfos 从 URL 取它做 fallback key。
+      const sibUrl = PROACTIVE_ENDPOINTS.ADDINFO_URL + (PROACTIVE_ENDPOINTS.ADDINFO_URL.includes("?") ? "&" : "?") + "__chip=" + sib.rid;
+      await fireOne(sibUrl,
+        withViewid(addinfoPayload(sib.parent, viewid, sib.rid)),
+        "addInfo-sibling",
+        "rid=" + sib.rid + " parent=" + sib.parent);
+      // priceCalendar / resourceDetails 跳过 — chip rid 在那两个端点 100% 失败
+      // (errcode 1005 / 404)；价格由 parser 从父 rid 价格 fallback，ppl 由 parser
+      // 从 addInfo chip name 后缀正则解析。
       if (i < siblingList.length - 1) {
         await sleepWithJitter(PROACTIVE_STAGGER_MS, PROACTIVE_STAGGER_JITTER_MS);
       }

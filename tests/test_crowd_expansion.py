@@ -696,3 +696,114 @@ def test_parse_round_parent_sku_chip_fanout_overrides_mpri():
     assert by_rid[201]["full_name"] == "圆明园通票+智旅手册学生票"
     # 父 SKU 没被 chip fan-out 直接覆盖（chip 返回的是 child rid 201），仍走 shelf.mpri
     assert by_rid[100]["people_property"] == "成人票"
+
+
+# ── 父 rid addInfo 双键落库 + chip name 末尾人群正则 (2026-08-26 修复) ──
+
+def _addinfo_parent_with_chips_body() -> dict:
+    """父 rid 109771882 的 addInfo 响应，含两个 chip（成人 / 儿童）。"""
+    return {
+        "data": {"resources": [
+            {"id": 109771882, "productId": 109770667,
+             "name": "圆明园通票+智旅手册成人票",
+             "vendorInfo": {"vendorId": 16540, "name": "携程代理",
+                            "brandCompanyName": "北京旭冉假期旅游有限公司",
+                            "licenceNo": "91110106563680484T",
+                            "rawLicencePicUrl": None}},
+            {"id": 109771882, "productId": 110268323,
+             "name": "圆明园通票+智旅手册儿童票",
+             "vendorInfo": {"vendorId": 16540, "name": "携程代理",
+                            "brandCompanyName": "北京旭冉假期旅游有限公司",
+                            "licenceNo": "91110106563680484T",
+                            "rawLicencePicUrl": None}},
+        ]}
+    }
+
+
+def test_parse_addinfos_chip_name_extracts_ppl():
+    """父 rid 的 addInfo 响应里 chip 的 name 末尾「成人票/儿童票」必须解析成 ppl。
+
+    之前 _parse_addinfos 只存 vendor + full_name，chip 行 people_property 落空。
+    通过 URL 的 __chip hint 也能识别 sibling fire（productId 在响应里是 mpri 不是 chip）。
+    """
+    from ctrip_core.parse import _parse_addinfos
+    # 模拟 sibling fire：URL 带 __chip=110268323，响应里 productId 是 mpri (109770667)
+    body = _addinfo_parent_with_chips_body()
+    pairs = [
+        ("/restapi/soa2/12530/json/resourceAddInfo", body),
+        ("/restapi/soa2/12530/json/resourceAddInfo?__chip=110268323", body),
+    ]
+    out = _parse_addinfos(pairs, rids={109771882, 109770667, 110268323})
+    assert out[109770667]["people_property"] == "成人票"
+    assert out[110268323]["people_property"] == "儿童票"
+    assert out[109770667]["full_name"] == "圆明园通票+智旅手册成人票"
+    assert out[110268323]["full_name"] == "圆明园通票+智旅手册儿童票"
+
+
+def test_parse_addinfos_multi_chip_names_dont_overwrite():
+    """同一父 rid 的多个 chip addInfo 响应按 productId 落库时，各自的 full_name 互不覆盖。
+
+    双键落库最后写入会覆盖，但只在 chip rid 自己的 key 上覆盖，不会让 chip1.name
+    变成 chip2.name。父 rid 的 key 会保留最后写入的 chip — 这是设计意图（dashboard
+    主要按 chip rid 渲染）。
+    """
+    from ctrip_core.parse import _parse_addinfos
+    # 用 URL __chip hint 区分两个 sibling fire，避免 productId 全部撞到 mpri
+    body = _addinfo_parent_with_chips_body()
+    pairs = [
+        ("/restapi/soa2/12530/json/resourceAddInfo?__chip=109770667", body),
+        ("/restapi/soa2/12530/json/resourceAddInfo?__chip=110268323", body),
+    ]
+    out = _parse_addinfos(pairs, rids={109771882, 109770667, 110268323})
+    assert out[109770667]["full_name"].endswith("成人票")
+    assert out[110268323]["full_name"].endswith("儿童票")
+    assert "成人票" not in out[110268323]["full_name"]
+    assert "儿童票" not in out[109770667]["full_name"]
+
+
+def test_parse_price_calendars_chip_inherits_parent_price():
+    """_parse_price_calendars 给 chip 行复制父 rid 的 price_day（resourceId 替换）。
+
+    实测 Ctrip priceCal 对 chip rid 单独 query → errcode 1005，
+    _parse_price_calendars 必须从 shelf_lookup 找 parent_resource_id fallback。
+    """
+    from ctrip_core.parse import _parse_price_calendars
+    parent_rid = 109771882
+    chip_rid = 109770667
+    shelf_lookup = {
+        parent_rid: {"resource_id": parent_rid, "parent_resource_id": None,
+                     "people_property": "成人票"},
+        chip_rid: {"resource_id": chip_rid, "parent_resource_id": parent_rid,
+                   "people_property": None},
+    }
+    pricecal = {
+        "data": {"priceAndStockInfos": [{
+            "date": "2026-08-26",
+            "packagePriceAndStockInfos": [{
+                "packageId": 5939620,
+                "resourcePriceAndStockInfos": [{
+                    "resourceId": parent_rid,
+                    "salePrice": 34, "price": 34, "marketPrice": 60,
+                    "inventoryNum": 100, "available": True, "discount": 0.57,
+                }],
+            }],
+        }]}
+    }
+    out = _parse_price_calendars(
+        [pricecal],
+        vendor_map={parent_rid: {"primary": {"vendorId": 16540}},
+                    chip_rid: {"primary": {"vendorId": 16540}}},
+        shelf_lookup=shelf_lookup,
+    )
+    by_rid = {r["resource_id"]: r for r in out}
+    # 父 rid 自己的行在
+    assert parent_rid in by_rid
+    assert by_rid[parent_rid]["sale_price"] == 34
+    # chip rid 继承父价（resource_id 替换成 chip_rid）
+    assert chip_rid in by_rid
+    chip_row = by_rid[chip_rid]
+    assert chip_row["sale_price"] == 34
+    assert chip_row["inherited_from_parent"] is True
+    assert chip_row["sale_date"] == "2026-08-26"
+    # winning_vendor_id 也跟着复制
+    assert chip_row["winning_vendor_id"] == 16540
